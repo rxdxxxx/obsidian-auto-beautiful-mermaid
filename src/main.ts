@@ -139,30 +139,6 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     });
 
     await ready;
-
-    // [ABM-DIAG] 临时诊断：延迟抓 timeline 块渲染后的真实 DOM
-    if (extractDiagramType(source) === "timeline") {
-      setTimeout(() => {
-        const sectionRoot = el.closest(".markdown-preview-section, .markdown-rendered, .cm-preview-code-block") ?? el.parentElement ?? el;
-        const svgs = sectionRoot.querySelectorAll("svg");
-        const mermaidCodes = sectionRoot.querySelectorAll("code.language-mermaid");
-        const preMermaids = sectionRoot.querySelectorAll(".mermaid");
-        console.log("[ABM-DIAG] timeline 块诊断", {
-          "el.tagName": el.tagName,
-          "el.className": el.className,
-          "el 内 svg 数": el.querySelectorAll("svg").length,
-          "section 内 svg 总数": svgs.length,
-          "section 内 code.language-mermaid 数": mermaidCodes.length,
-          "section 内 .mermaid 数": preMermaids.length,
-          "el.parentElement.className": el.parentElement?.className,
-        });
-        svgs.forEach((svg, i) => {
-          const owner = svg.closest(".abm-block") ? "ABM容器(我们的)" : (svg.closest(".mermaid") ? ".mermaid(原生)" : "其它/裸");
-          console.log(`[ABM-DIAG] svg#${i}: 归属=${owner}, 父节点=${svg.parentElement?.tagName}.${svg.parentElement?.className}`);
-        });
-        console.log("[ABM-DIAG] el.outerHTML 前 600 字符:", el.outerHTML.slice(0, 600));
-      }, 800);
-    }
   }
 
   /**

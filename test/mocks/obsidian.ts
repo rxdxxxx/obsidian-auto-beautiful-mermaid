@@ -39,52 +39,51 @@ export class Plugin {
 export type MarkdownPostProcessorContext = Record<string, unknown>;
 
 /**
- * Minimal mock of `MarkdownRenderChild`. src/main.ts constructs one as the
- * lifecycle `component` passed to `MarkdownRenderer.render` for a System view.
- * Only the constructor shape is exercised in tests.
+ * Mock of Obsidian's `loadMermaid()`. src/main.ts renders the System view by
+ * `loadMermaid()` then `mermaid.render(id, source)`. Tests control the render
+ * result via `__setMermaidRender` and inspect load count via `__loadMermaidCalls`.
  */
-export class MarkdownRenderChild {
-  containerEl: HTMLElement;
-  loaded = false;
+const DEFAULT_RENDER = async (): Promise<{ svg: string }> => ({
+  svg: '<svg data-mermaid="system"></svg>',
+});
+let mermaidRenderImpl: (id: string, source: string) => Promise<{ svg?: string } | string> =
+  DEFAULT_RENDER;
+let loadMermaidCalls = 0;
+let loadFailures = 0;
 
-  constructor(containerEl: HTMLElement) {
-    this.containerEl = containerEl;
+export function loadMermaid(): Promise<unknown> {
+  loadMermaidCalls += 1;
+  if (loadFailures > 0) {
+    loadFailures -= 1;
+    return Promise.reject(new Error("loadMermaid failed"));
   }
-
-  load(): void {
-    this.loaded = true;
-    this.onload();
-  }
-
-  unload(): void {
-    this.loaded = false;
-    this.onunload();
-  }
-
-  onload(): void {
-    // no-op
-  }
-
-  onunload(): void {
-    // no-op
-  }
+  return Promise.resolve({
+    render: (id: string, source: string) => mermaidRenderImpl(id, source),
+  });
 }
 
-/**
- * Minimal mock of `MarkdownRenderer`. src/main.ts delegates unsupported diagram
- * types to `MarkdownRenderer.render`; tests spy on this static method to assert
- * the routing decision. The default implementation is an inert resolved promise.
- */
-export class MarkdownRenderer {
-  static render(
-    _app: unknown,
-    _markdown: string,
-    _el: HTMLElement,
-    _sourcePath: string,
-    _component: unknown,
-  ): Promise<void> {
-    return Promise.resolve();
-  }
+/** Test helper: override the mermaid.render implementation. */
+export function __setMermaidRender(
+  fn: (id: string, source: string) => Promise<{ svg?: string } | string>,
+): void {
+  mermaidRenderImpl = fn;
+}
+
+/** Test helper: make the next N loadMermaid() calls reject. */
+export function __failNextLoad(times = 1): void {
+  loadFailures = times;
+}
+
+/** Test helper: how many times loadMermaid() has been invoked. */
+export function __loadMermaidCalls(): number {
+  return loadMermaidCalls;
+}
+
+/** Test helper: reset the mermaid mock between tests. */
+export function __resetMermaid(): void {
+  mermaidRenderImpl = DEFAULT_RENDER;
+  loadMermaidCalls = 0;
+  loadFailures = 0;
 }
 
 /**
