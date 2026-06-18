@@ -260,7 +260,7 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
   const { host, source } = opts;
 
   const container = host.createDiv({ cls: "abm-block" });
-  const bar = container.createDiv({ cls: "abm-toggle" });
+  const bar = container.createDiv({ cls: "abm-toolbar" });
   const views = container.createDiv({ cls: "abm-views" });
 
   // Order matters for the "Both" mode, which stacks Beautiful above System.
@@ -299,7 +299,7 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
 
   for (const mode of MODE_ORDER) {
     const button = bar.createEl("button", {
-      cls: "abm-toggle-btn",
+      cls: "abm-toolbar-btn",
       text: MODE_LABELS[mode],
     });
     button.setAttribute("type", "button");

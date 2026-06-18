@@ -117,3 +117,21 @@ honor the same mode memory, styled to follow the active Obsidian theme.
 - **WHEN** the Obsidian theme is light or dark
 - **THEN** the toggle bar and views use Obsidian CSS variables so they match the
   active theme
+
+### Requirement: Toolbar is revealed on hover or focus
+The toolbar SHALL be hidden by default and revealed when the pointer hovers the
+block or keyboard focus is within it, without shifting the diagram's layout.
+
+#### Scenario: Hidden until hover
+- **WHEN** the pointer is not over a block and focus is elsewhere
+- **THEN** the toolbar is not visible (hidden via opacity/visibility, not display,
+  so the diagram does not reflow when it appears)
+
+#### Scenario: Revealed on hover
+- **WHEN** the pointer hovers over the block container
+- **THEN** the toolbar fades in over the block (absolutely positioned, top-right)
+  without displacing the diagram content
+
+#### Scenario: Reachable by keyboard
+- **WHEN** keyboard focus moves into the block (focus-within)
+- **THEN** the toolbar is visible so a keyboard user can operate the buttons

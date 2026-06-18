@@ -1,23 +1,41 @@
 /* Auto Beautiful Mermaid — block container, toggle bar, views & error styling */
 
-/* ---- Block container & toggle bar -------------------------------------- */
+/* ---- Block container & toolbar ----------------------------------------- */
 
+/* position:relative anchors the absolutely-positioned toolbar; the toolbar is
+   lifted out of flow so showing/hiding it never reflows the diagram. */
 .abm-block {
+  position: relative;
   margin: 0.5em 0;
 }
 
-.abm-toggle {
+.abm-toolbar {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
   display: flex;
   gap: 2px;
-  margin-bottom: 0.5em;
   padding: 2px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m, 6px);
   background-color: var(--background-secondary);
-  width: fit-content;
+  /* Hidden until hover/keyboard focus. opacity+visibility (not display) keeps
+     layout stable and lets the fade transition run. */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
 }
 
-.abm-toggle-btn {
+/* Reveal on pointer hover and on keyboard focus within the block, so keyboard
+   users can reach the buttons. */
+.abm-block:hover .abm-toolbar,
+.abm-block:focus-within .abm-toolbar {
+  opacity: 1;
+  visibility: visible;
+}
+
+.abm-toolbar-btn {
   appearance: none;
   border: none;
   background: transparent;
@@ -30,17 +48,17 @@
   box-shadow: none;
 }
 
-.abm-toggle-btn:hover {
+.abm-toolbar-btn:hover {
   background-color: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.abm-toggle-btn:focus-visible {
+.abm-toolbar-btn:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 1px;
 }
 
-.abm-toggle-btn.is-active {
+.abm-toolbar-btn.is-active {
   background-color: var(--interactive-accent);
   color: var(--text-on-accent);
 }

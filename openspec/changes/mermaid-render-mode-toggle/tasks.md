@@ -51,5 +51,12 @@
 
 ## 8. Build & finalize
 
-- [ ] 8.1 `npm test` green; `npm run build` (tsc typecheck + esbuild) clean
-- [ ] 8.2 Update README if user-facing behavior/screenshots change
+- [x] 8.1 `npm test` green (59 passing); `npm run build` (tsc typecheck + esbuild) clean
+- [x] 8.2 Update README if user-facing behavior/screenshots change — N/A, repo tracks no README
+
+## 9. Toolbar hover reveal (toggle-UI enhancement)
+
+- [x] 9.1 Rename the bar to `.abm-toolbar` / `.abm-toolbar-btn` (was `.abm-toggle*`) in main.ts + styles.css
+- [x] 9.2 `.abm-block` position:relative; `.abm-toolbar` absolute top-right, lifted out of flow (no reflow on show/hide)
+- [x] 9.3 Hidden by default (opacity:0 + visibility:hidden, not display), revealed on `.abm-block:hover` and `.abm-block:focus-within`, with an opacity transition
+- [x] 9.4 Verified by build + existing tests (class rename touches no test selectors); applies to both Reading View and Live Preview via shared CSS
