@@ -216,6 +216,10 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
    * before the returned promise, so the guard is only raised during our own
    * synchronous re-entry — we decrement it in `finally` immediately after the
    * call returns (NOT after `await`) so it can never leak to another block.
+   *
+   * Both a synchronous throw from `render` (a PP in the queue throwing during the
+   * synchronous pass) and an async rejection are funnelled into an in-slot error
+   * box, so neither escapes as an unhandled rejection.
    */
   private async renderSystemInto(
     slot: HTMLElement,
@@ -223,7 +227,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     sourcePath: string,
     component: Component,
   ): Promise<void> {
-    let promise: Promise<void>;
+    let promise: Promise<void> | undefined;
     this.systemRenderDepth++;
     try {
       promise = MarkdownRenderer.render(
@@ -233,10 +237,13 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
         sourcePath,
         component,
       );
+    } catch (error) {
+      renderError(slot, "system", error, source);
     } finally {
       this.systemRenderDepth--;
     }
 
+    if (!promise) return;
     try {
       await promise;
     } catch (error) {
@@ -372,7 +379,7 @@ export function isSupportedType(source: string): boolean {
  * System (Obsidian's native render) for the rest.
  */
 export function defaultModeFor(source: string): ViewMode {
-  return isSupportedType(source) ? "beautiful" : "system";
+  return isSupportedType(source) ? DEFAULT_MODE : "system";
 }
 
 /**

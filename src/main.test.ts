@@ -333,6 +333,22 @@ describe("renderSystemInto re-entry guard", () => {
     expect((errorBox as HTMLElement).textContent).toContain("system boom");
     expect(internals(plugin).systemRenderDepth).toBe(0);
   });
+
+  it("renders an error box (and clears depth) on a SYNCHRONOUS throw from render", async () => {
+    const plugin = makePlugin();
+    markdownRender.mockImplementation(() => {
+      throw new Error("sync system boom");
+    });
+    const slot = document.createElement("div");
+
+    // Must not reject (no unhandled rejection); error is shown in-slot.
+    await internals(plugin).renderSystemInto(slot, "pie\n title P", "n.md", plugin);
+
+    const errorBox = slot.querySelector(".abm-error");
+    expect(errorBox).not.toBeNull();
+    expect((errorBox as HTMLElement).textContent).toContain("sync system boom");
+    expect(internals(plugin).systemRenderDepth).toBe(0);
+  });
 });
 
 // --- mountMermaidBlock controller ----------------------------------------------
