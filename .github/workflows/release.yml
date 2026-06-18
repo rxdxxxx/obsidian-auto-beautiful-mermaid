@@ -1,0 +1,94 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag matching manifest.json version"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if [ "$tag" != "$manifest_version" ]; then
+            echo "::error::Git tag '$tag' must match manifest.json version '$manifest_version'."
+            exit 1
+          fi
+
+          if [ "$tag" != "$package_version" ]; then
+            echo "::error::Git tag '$tag' must match package.json version '$package_version'."
+            exit 1
+          fi
+
+          node -e "
+            const versions = require('./versions.json');
+            const tag = process.argv[1];
+            if (!versions[tag]) {
+              console.error('versions.json is missing ' + tag);
+              process.exit(1);
+            }
+          " "$tag"
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          test -s main.js
+          test -s manifest.json
+          test -s styles.css
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$tag" main.js manifest.json styles.css \
+              --title "$tag" \
+              --generate-notes
+          fi

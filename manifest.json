@@ -3,7 +3,8 @@
   "name": "Auto Beautiful Mermaid",
   "version": "1.0.0",
   "minAppVersion": "1.4.0",
-  "description": "Smart-routes Mermaid code blocks: beautiful-mermaid renders its 6 supported diagram types, official mermaid.js renders everything else.",
-  "author": "",
+  "description": "Smart-routes Mermaid diagrams: beautiful-mermaid for its 6 supported types, Obsidian's built-in engine for everything else.",
+  "author": "rxdxxxx",
+  "authorUrl": "https://github.com/rxdxxxx",
   "isDesktopOnly": false
 }
