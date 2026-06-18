@@ -42,56 +42,53 @@ this is the wrong model:
 - The System view is genuinely Obsidian-native output, with no second mermaid
   engine added to the bundle.
 - Per-block mode survives Live Preview widget rebuilds within a session (Map
-  keyed by fence source); resets to Beautiful on note reopen.
-- Unsupported mermaid types remain entirely untouched by this plugin.
+  keyed by fence source); resets to its type default on note reopen.
+- **Every** mermaid block is owned by the plugin; none are left to Obsidian's
+  native auto-rendering. The diagram type only chooses the default mode and the
+  toolbar's button set.
 
 **Non-Goals:**
 - Persisting mode to disk or as a global setting.
-- A toggle bar for unsupported diagram types.
 - Bundling our own mermaid library.
 - Changing which diagram types beautiful-mermaid supports (`BEAUTIFUL_SUPPORTED`).
 - Cross-note or cross-session memory of modes.
 
 ## Decisions
 
-### D1 — Own the block via a code-block processor (`sortOrder < 0`)
-We keep `registerMarkdownCodeBlockProcessor("mermaid", handler, PROCESSOR_PRIORITY)`
-with `PROCESSOR_PRIORITY = -200`. Because the wrapper replaces the `<pre>`
-synchronously before the native PP (order 0) scans, this **deterministically
-pre-empts native** in any pass — first render *and* rebuild — for blocks we
-choose to handle. This is the structural basis of the no-double-render invariant.
+### D1 — Complete takeover of every mermaid block (REVISED)
+We register `registerMarkdownCodeBlockProcessor("mermaid", handler, -200)` and
+take over **every** mermaid block. Because the code-block wrapper replaces the
+`<pre>` synchronously before the native PP (order 0) scans, owning the block
+deterministically pre-empts native in every pass (first render and rebuild). This
+is the structural basis of the no-double-render invariant — and it must apply to
+*all* blocks, because leaving any type to native auto-rendering is exactly what
+let one fence produce multiple diagrams. (Confirmed against the reference
+implementation qiaoborui/obsidian-beautiful-mermaid, which registers one
+undifferentiated `mermaid` processor and renders every block, with no type
+branch and no native delegation.)
 
-For **unsupported** types the handler must still let native render, with **zero
-degradation** of native UX (source-toggle button, error fallback, and the
-`getSectionInfo`-dependent `replaceCode` behavior). The wrapper has *already*
-removed the original `<pre>` by the time we run, so "doing nothing" would leave
-an empty div. To keep the DOM **byte-for-byte equivalent to the no-plugin case**
-(no extra nesting that could shift `getSectionInfo` line mapping or wrap the
-native error UI), the handler **replaces our own wrapper div with a freshly built
-`<pre><code class="language-mermaid">{source}</code></pre>** via
-`el.replaceWith(pre)` — restoring the section to exactly the structure Obsidian
-would have produced — then returns. The native PP (order 0, later in the same
-loop) finds it at its original position and renders it identically to a vault
-without this plugin. (Building the pre inside our div, rather than replacing the
-div, is the fallback only if `el.replaceWith` proves unsafe with the wrapper's
-bookkeeping.)
+The diagram type (`isSupportedType`) no longer decides *whether* we take over —
+only the per-block default mode and button set:
+- **Supported** types: default **Beautiful**; toolbar offers all four modes.
+- **Unsupported** types (gantt/pie/mindmap/timeline/…): default **System**;
+  toolbar offers only **System + Source** (Beautiful/Both buttons are *not
+  created* — beautiful-mermaid cannot draw these, so offering them would only
+  yield an error box). The Beautiful slot is not created and `renderBeautiful` is
+  never invoked, avoiding a wasted throw.
 
-> **Equivalence gate (hard constraint):** the unsupported-type passthrough is
-> only acceptable if native source-toggle, error fallback, and `replaceCode`/
-> `getSectionInfo` behave **identically** to no-plugin. This MUST be verified
-> (see tasks). If any native UX degrades or mis-positions, we **do not take over
-> unsupported types at all** — restore the original `<pre>` and leave it, even
-> if that costs structural cleanliness. Beautiful-supported types are unaffected
-> either way.
+**This supersedes the previous D1** (which delegated unsupported types back to
+native via `el.replaceWith` and gated on a native-UX "equivalence" check). That
+delegation is removed entirely. Native output and native error UI for unsupported
+types now come from the **System slot**, which renders via `MarkdownRenderer.render`
+(see D3) — e.g. a malformed `pie` shows Obsidian's *native* error box inside its
+System slot. The old equivalence hard-gate is therefore moot; the new manual
+check is simply "malformed unsupported diagram shows the native error box in the
+System slot."
 
-This same recreate-pre primitive is reused for the System view (see D3); the
-difference is the System view recreates *inside* a dedicated slot, where extra
-nesting is intentional and native `replaceCode` is irrelevant.
-
-*Alternative considered:* register a plain `registerMarkdownPostProcessor` and
-manually orchestrate. Rejected — the code-block wrapper's deterministic, ordered
-`pre.replaceWith` is exactly the pre-emption primitive we want, and re-implementing
-it as a raw PP is more fragile.
+*Alternative considered:* keep delegating unsupported types to native (old D1).
+Rejected per the explicit "complete takeover" requirement — any block left to the
+native PostProcessor reopens the multi-render problem, and we already have a
+System slot that yields genuine native output without delegation.
 
 ### D2 — No-double-render invariant (explicit)
 > **Invariant:** For any mermaid block, at most one renderer ever produces
@@ -170,8 +167,9 @@ Factor a view-agnostic `MermaidBlockController` that, given a host element +
 source + a "render system into host" callback, builds the toggle bar, the four
 slots, wires mode switching, and reads/writes the mode Map. Reading View provides
 a callback using `MarkdownRenderer.render`; Live Preview's widget `toDOM` provides
-the same. Pure helpers (`extractDiagramType`, fence finding, mode-key, "should we
-own this type") stay exported for unit tests, matching existing style.
+the same. Pure helpers (`extractDiagramType`, fence finding, `modeKey`,
+`isSupportedType`, `defaultModeFor`, `allowedModes`) stay exported for unit tests,
+matching existing style.
 
 ## Risks / Trade-offs
 
@@ -180,6 +178,11 @@ own this type") stay exported for unit tests, matching existing style.
   → Mitigation: this is long-stable Obsidian behavior; isolate the assumption in
   one place; if it ever breaks, Beautiful mode still works and only System is
   affected. Document the assumption inline with the verified `app.js` evidence.
+- **[Complete takeover removes any beautiful-engine fallback]** With no
+  delegation, if beautiful-mermaid fails on a *supported* type the reader sees an
+  error box (or can switch to System); there is no automatic native fallback.
+  → Accepted: this is the explicit "complete takeover" intent; the System toggle
+  is the manual recovery path.
 - **[`MarkdownRenderer.render` re-entry depth flag leakage]** If the PP loop were
   ever async-before-return, the flag could affect another block. → Mitigation:
   verified synchronous in `app.js`; decrement right after the call returns (not
@@ -197,9 +200,11 @@ own this type") stay exported for unit tests, matching existing style.
 
 ## Migration Plan
 
-- Remove `neutralizeNativeMermaid` and `renderWithNative`; replace
-  `handleMermaid`'s branch with the owned-container path for supported types and
-  the recreate-pre passthrough for unsupported types.
+- Remove `neutralizeNativeMermaid`, `renderWithNative`, and the unsupported-type
+  `restoreNativeFence` delegation. `handleMermaid` mounts the owned container for
+  every block; `isSupportedType` feeds `defaultModeFor`/`allowedModes` only.
+- Live Preview: `buildDecorations` decorates every mermaid fence (drop the
+  supported-only skip).
 - No data migration (no persisted state). No manifest/version bump required by
   the mechanism itself (bump version per repo convention on release).
 - Rollback: revert the change; previous behavior restored. No persisted artifacts
@@ -207,6 +212,8 @@ own this type") stay exported for unit tests, matching existing style.
 
 ## Open Questions
 
-- None blocking. (Resolved with user: only-wrap-supported types; MarkdownRenderer
-  recreate-pre for System; session Map keyed by source; Both = Beautiful above
-  System.)
+- None blocking. (Resolved with user: complete takeover of all blocks;
+  per-type default + button set — supported→Beautiful+4 buttons,
+  unsupported→System+{System,Source}; MarkdownRenderer recreate-pre for System;
+  session Map keyed by source; Both = Beautiful above System. New manual check:
+  malformed unsupported diagram shows the native error box in its System slot.)

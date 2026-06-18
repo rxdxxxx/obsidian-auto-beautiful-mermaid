@@ -4,8 +4,10 @@ import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import { MarkdownRenderChild, MarkdownRenderer } from "obsidian";
 
 import AutoBeautifulMermaidPlugin, {
+  allowedModes,
   appendSvg,
   DEFAULT_MODE,
+  defaultModeFor,
   extractDiagramType,
   findMermaidFences,
   isSupportedType,
@@ -14,6 +16,11 @@ import AutoBeautifulMermaidPlugin, {
   renderError,
   type ViewMode,
 } from "./main";
+
+/** Full button set for a beautiful-mermaid supported type. */
+const SUPPORTED_MODES: ViewMode[] = ["beautiful", "system", "both", "source"];
+/** Button set for an unsupported type. */
+const UNSUPPORTED_MODES: ViewMode[] = ["system", "source"];
 
 // --- External dependency mocks -------------------------------------------------
 
@@ -170,34 +177,37 @@ describe("Reading View routing", () => {
     ["pie", "pie\n  title Pie\n  \"A\" : 10"],
     ["timeline", "timeline\n  title History"],
     ["mindmap", "mindmap\n  root((center))"],
-  ])("restores a plain native fence for unsupported type %s", async (_label, source) => {
+  ])("owns unsupported type %s too: container, default System, no Beautiful/Both buttons", async (_label, source) => {
     const plugin = makePlugin();
-    // Attach to a parent so el.replaceWith swaps in the restored <pre>.
-    const parent = document.createElement("div");
-    const el = parent.createDiv();
+    const el = document.createElement("div");
 
     await route(plugin, source, el);
 
-    // No container, no beautiful/native MarkdownRenderer call: native PP handles it.
-    expect(parent.querySelector(".abm-block")).toBeNull();
+    // Full takeover: a container is mounted (no delegation to native PP).
+    const container = el.querySelector(".abm-block") as HTMLElement;
+    expect(container).not.toBeNull();
+    expect(container.dataset.mode).toBe("system");
+    // Beautiful is never invoked for unsupported types (no wasted throw).
     expect(renderBeautiful).not.toHaveBeenCalled();
-    expect(markdownRender).not.toHaveBeenCalled();
-    // A plain <pre><code class="language-mermaid"> is present at the original spot.
-    const code = parent.querySelector("pre > code.language-mermaid");
-    expect(code).not.toBeNull();
-    expect((code as HTMLElement).textContent).toBe(source);
+    expect(el.querySelector(".abm-view-beautiful")).toBeNull();
+    // Only System + Source buttons exist.
+    const buttonModes = Array.from(el.querySelectorAll(".abm-toolbar-btn")).map(
+      (b) => (b as HTMLElement).dataset.mode,
+    );
+    expect(buttonModes).toEqual(["system", "source"]);
+    // System default → native render fired once into the System slot.
+    expect(markdownRender).toHaveBeenCalledTimes(1);
   });
 
-  it("restores a native fence when no type can be extracted", async () => {
+  it("owns a block with no extractable type (default System)", async () => {
     const plugin = makePlugin();
-    const parent = document.createElement("div");
-    const el = parent.createDiv();
+    const el = document.createElement("div");
 
     await route(plugin, "\n%% only a comment\n   \n", el);
 
-    expect(parent.querySelector("pre > code.language-mermaid")).not.toBeNull();
+    expect((el.querySelector(".abm-block") as HTMLElement).dataset.mode).toBe("system");
     expect(renderBeautiful).not.toHaveBeenCalled();
-    expect(markdownRender).not.toHaveBeenCalled();
+    expect(markdownRender).toHaveBeenCalledTimes(1);
   });
 
   it("re-entry guard: while inside a System render it recreates the fence, not a container", async () => {
@@ -339,6 +349,7 @@ describe("mountMermaidBlock", () => {
     const { container, ready } = mountMermaidBlock({
       host,
       source: SOURCE,
+      modes: SUPPORTED_MODES,
       getMode: mode.getMode,
       setMode: mode.setMode,
       renderBeautiful: renderB,
@@ -364,6 +375,7 @@ describe("mountMermaidBlock", () => {
     const { container } = mountMermaidBlock({
       host,
       source: SOURCE,
+      modes: SUPPORTED_MODES,
       getMode: mode.getMode,
       setMode: mode.setMode,
       renderBeautiful: vi.fn(),
@@ -388,6 +400,7 @@ describe("mountMermaidBlock", () => {
     mountMermaidBlock({
       host,
       source: SOURCE,
+      modes: SUPPORTED_MODES,
       getMode: () => "source",
       setMode: vi.fn(),
       renderBeautiful: vi.fn(),
@@ -405,6 +418,7 @@ describe("mountMermaidBlock", () => {
     const { container } = mountMermaidBlock({
       host,
       source: SOURCE,
+      modes: SUPPORTED_MODES,
       getMode: () => "both",
       setMode: vi.fn(),
       renderBeautiful: vi.fn(),
@@ -413,6 +427,71 @@ describe("mountMermaidBlock", () => {
 
     expect(container.dataset.mode).toBe("both");
     expect(renderS).toHaveBeenCalledTimes(1);
+  });
+
+  it("for an unsupported modes set: no Beautiful slot, no Beautiful render, only System/Source buttons", () => {
+    const host = document.createElement("div");
+    const renderB = vi.fn();
+    const renderS = vi.fn();
+
+    const { container } = mountMermaidBlock({
+      host,
+      source: "gantt\n  title G",
+      modes: UNSUPPORTED_MODES,
+      getMode: () => "system",
+      setMode: vi.fn(),
+      renderBeautiful: renderB,
+      renderSystem: renderS,
+    });
+
+    expect(container.dataset.mode).toBe("system");
+    expect(container.querySelector(".abm-view-beautiful")).toBeNull();
+    expect(renderB).not.toHaveBeenCalled(); // never invoked → no wasted throw
+    expect(renderS).toHaveBeenCalledTimes(1); // System default renders eagerly
+    expect(
+      Array.from(container.querySelectorAll(".abm-toolbar-btn")).map(
+        (b) => (b as HTMLElement).dataset.mode,
+      ),
+    ).toEqual(["system", "source"]);
+  });
+});
+
+// --- per-type default mode & button set ----------------------------------------
+
+describe("defaultModeFor / allowedModes / getMode clamping", () => {
+  it("supported types default to Beautiful and offer all four modes", () => {
+    expect(defaultModeFor("flowchart TD\n A-->B")).toBe("beautiful");
+    expect(allowedModes("flowchart TD\n A-->B")).toEqual([
+      "beautiful",
+      "system",
+      "both",
+      "source",
+    ]);
+  });
+
+  it("unsupported types default to System and offer only System/Source", () => {
+    expect(defaultModeFor("gantt\n title G")).toBe("system");
+    expect(allowedModes("gantt\n title G")).toEqual(["system", "source"]);
+  });
+
+  it("getMode clamps a remembered mode to the type's allowed set", () => {
+    const plugin = makePlugin();
+    const gantt = "gantt\n  title G";
+
+    // A mode not offered by this type (e.g. a stale 'beautiful') falls back to
+    // the type default rather than being honored.
+    plugin.setMode(gantt, "beautiful");
+    expect(plugin.getMode(gantt)).toBe("system");
+
+    // A valid remembered mode is honored.
+    plugin.setMode(gantt, "source");
+    expect(plugin.getMode(gantt)).toBe("source");
+  });
+
+  it("getMode returns the type default when nothing is remembered", () => {
+    const plugin = makePlugin();
+    expect(plugin.getMode("flowchart TD\n A-->B")).toBe("beautiful");
+    expect(plugin.getMode("pie\n \"A\": 1")).toBe("system");
   });
 });
 

@@ -1,47 +1,59 @@
 ## ADDED Requirements
 
-### Requirement: Owned container for supported diagram types
-The plugin SHALL render supported mermaid diagram types as a single owned
-container holding a toggle bar and the diagram views, and SHALL take ownership of
-the block before Obsidian's native mermaid PostProcessor can act on it. Supported
-types are graph/flowchart, stateDiagram(-v2), sequenceDiagram, classDiagram,
-erDiagram, and xychart(-beta).
+### Requirement: Complete takeover of every mermaid block
+The plugin SHALL render EVERY `mermaid` code block as a single owned container,
+taking ownership before Obsidian's native mermaid PostProcessor can act on it.
+No mermaid block — supported or unsupported — SHALL be left to Obsidian's native
+auto-rendering.
 
 #### Scenario: Supported type is taken over
-- **WHEN** a `mermaid` fence whose first meaningful token is a supported type
-  (graph/flowchart, stateDiagram(-v2), sequenceDiagram, classDiagram, erDiagram,
-  xychart(-beta)) is rendered in Reading View
-- **THEN** the plugin renders its container with a toggle bar
+- **WHEN** a `mermaid` fence of a supported type (graph/flowchart,
+  stateDiagram(-v2), sequenceDiagram, classDiagram, erDiagram, xychart(-beta)) is
+  rendered in Reading View
+- **THEN** the plugin renders its container with a toolbar
 - **AND** the original `code.language-mermaid` node is no longer present in the
   block subtree, so Obsidian's native PostProcessor does not auto-render it
 
-#### Scenario: Unsupported type is left to native
-- **WHEN** a `mermaid` fence whose type is NOT supported (e.g. gantt, pie,
-  mindmap, timeline) is rendered
-- **THEN** the plugin does NOT add a toggle bar
-- **AND** the block is rendered by Obsidian's native mermaid renderer, preserving
-  its native source toggle and error UI
+#### Scenario: Unsupported type is also taken over
+- **WHEN** a `mermaid` fence of an unsupported type (e.g. gantt, pie, mindmap,
+  timeline) is rendered
+- **THEN** the plugin renders its container with a toolbar (it is NOT left to
+  Obsidian's native auto-rendering)
+- **AND** no `code.language-mermaid` node remains in the block subtree outside an
+  explicitly created System slot
 
-### Requirement: Four view modes
-The container SHALL offer exactly four modes — Beautiful, System, Both, Source —
-selectable from the toggle bar, with Beautiful as the default.
+### Requirement: Per-type default mode and button set
+The container SHALL offer the modes appropriate to the block's diagram type and
+default accordingly: supported types offer all four modes (Beautiful, System,
+Both, Source) defaulting to Beautiful; unsupported types offer only System and
+Source defaulting to System. Buttons for unavailable modes SHALL NOT be created
+(not merely disabled), and the Beautiful view SHALL NOT be rendered for an
+unsupported type.
 
-#### Scenario: Default mode
-- **WHEN** a supported block is first rendered and has no remembered mode
-- **THEN** the Beautiful view is shown and the Beautiful toggle is marked active
+#### Scenario: Supported default and buttons
+- **WHEN** a supported block is first rendered with no remembered mode
+- **THEN** the Beautiful view is shown, its toolbar button is marked active
+- **AND** the toolbar shows Beautiful, System, Both, and Source buttons
 
-#### Scenario: Switch to System
-- **WHEN** the reader selects System
-- **THEN** only the native (System) render is visible and the Beautiful view is hidden
+#### Scenario: Unsupported default and buttons
+- **WHEN** an unsupported block is first rendered with no remembered mode
+- **THEN** the System view is the active mode
+- **AND** the toolbar shows only System and Source buttons (no Beautiful/Both)
+- **AND** the Beautiful renderer is never invoked for that block
 
 #### Scenario: Switch to Both
-- **WHEN** the reader selects Both
+- **WHEN** the reader selects Both on a supported block
 - **THEN** the Beautiful view is shown stacked above the System view
 
 #### Scenario: Switch to Source
 - **WHEN** the reader selects Source
 - **THEN** the raw mermaid fence text is shown as preformatted text
 - **AND** that source view contains no element carrying the `language-mermaid` class
+
+#### Scenario: Remembered mode is clamped to the type's allowed set
+- **WHEN** a remembered mode is not offered by the block's type (e.g. a stale
+  Beautiful for an unsupported type)
+- **THEN** the block falls back to the type's default mode instead of honoring it
 
 ### Requirement: No double render invariant
 At most one renderer SHALL produce visible output for a given block, determined
@@ -84,10 +96,15 @@ engine, and the re-entry guard SHALL NOT affect rendering of other blocks.
   recreate-pre passthrough)
 
 #### Scenario: Lazy and cached
-- **WHEN** a block stays in Beautiful mode
+- **WHEN** a supported block stays in Beautiful mode
 - **THEN** no System render is performed
 - **AND WHEN** System or Both is selected the System render runs once and is reused
   on later switches
+
+#### Scenario: Native errors surface in the System slot
+- **WHEN** an unsupported block contains a malformed diagram (e.g. a broken pie)
+- **THEN** its System slot shows Obsidian's native mermaid error UI (since the
+  System slot renders through the native engine), not the plugin's own error box
 
 ### Requirement: Per-block session mode memory
 The plugin SHALL remember each block's chosen mode for the session in a map keyed
@@ -101,16 +118,19 @@ mode. Mode SHALL NOT persist across note reopen.
 
 #### Scenario: Mode resets on reopen
 - **WHEN** the note is closed and reopened
-- **THEN** every block starts in Beautiful mode
+- **THEN** every block starts in its type default (Beautiful for supported types,
+  System for unsupported types)
 
 ### Requirement: Consistent toggle interaction in both surfaces
-Both Reading View and Live Preview SHALL present the same four-mode toggle bar and
-honor the same mode memory, styled to follow the active Obsidian theme.
+Both Reading View and Live Preview SHALL present the same toolbar (with the
+type-appropriate button set) and honor the same mode memory, styled to follow the
+active Obsidian theme. Live Preview SHALL decorate every mermaid fence (supported
+and unsupported), not only supported ones.
 
 #### Scenario: Live Preview toggle
-- **WHEN** a supported fence is shown as a widget in Live Preview (cursor outside
+- **WHEN** any mermaid fence is shown as a widget in Live Preview (cursor outside
   the fence)
-- **THEN** the widget shows the toggle bar and switching modes behaves as in
+- **THEN** the widget shows the toolbar and switching modes behaves as in
   Reading View
 
 #### Scenario: Theme-following styling

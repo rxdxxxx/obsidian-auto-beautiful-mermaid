@@ -87,24 +87,32 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
   private systemRenderDepth = 0;
 
   async onload(): Promise<void> {
-    // Reading View: one processor for the `mermaid` fence language. Supported
-    // types become an owned, toggleable container; unsupported types are restored
-    // to plain `<pre><code class="language-mermaid">` so Obsidian's native
-    // renderer handles them untouched (keeping its source toggle and error UI).
+    // Reading View: one processor for the `mermaid` fence language. We take over
+    // EVERY mermaid block (no type-based delegation), so Obsidian's native
+    // PostProcessor never auto-renders any block — this is what prevents one
+    // fence producing multiple diagrams. The diagram type only decides the
+    // block's default mode and which toolbar buttons appear.
     this.registerMarkdownCodeBlockProcessor(
       "mermaid",
       (source, el, ctx) => this.handleMermaid(source, el, ctx),
       PROCESSOR_PRIORITY,
     );
 
-    // Live Preview: a CodeMirror extension that replaces supported mermaid fences
-    // with the same toggleable container while the cursor is outside them.
+    // Live Preview: a CodeMirror extension that replaces every mermaid fence with
+    // the same toggleable container while the cursor is outside it.
     this.registerEditorExtension(createMermaidEditorExtension(this));
   }
 
-  /** Current remembered mode for a block, or the default. */
+  /**
+   * Current mode for a block: the remembered mode if it is still valid for this
+   * diagram type, otherwise the type's default (Beautiful for supported types,
+   * System for unsupported ones). Clamping matters because the set of modes a
+   * block offers depends on its type (see {@link allowedModes}).
+   */
   getMode(source: string): ViewMode {
-    return this.modeStore.get(modeKey(source)) ?? DEFAULT_MODE;
+    const allowed = allowedModes(source);
+    const stored = this.modeStore.get(modeKey(source));
+    return stored && allowed.includes(stored) ? stored : defaultModeFor(source);
   }
 
   /** Remember a block's chosen mode for the session. */
@@ -131,13 +139,8 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
       return;
     }
 
-    // Unsupported types: restore the no-plugin DOM and let native render it.
-    if (!isSupportedType(source)) {
-      restoreNativeFence(el, source);
-      return;
-    }
-
-    // Supported types: mount the toggleable container.
+    // Every other mermaid block (supported AND unsupported) is owned: mount the
+    // toggleable container. The type only selects the default mode and buttons.
     const child = typeof ctx.addChild === "function"
       ? new MarkdownRenderChild(el)
       : undefined;
@@ -146,6 +149,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     const { ready } = mountMermaidBlock({
       host: el,
       source,
+      modes: allowedModes(source),
       getMode: () => this.getMode(source),
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulInto(slot, source),
@@ -176,6 +180,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     mountMermaidBlock({
       host,
       source,
+      modes: allowedModes(source),
       getMode: () => this.getMode(source),
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulSyncInto(slot, source),
@@ -243,29 +248,40 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
 /**
  * Mount a toggleable mermaid block into `host`.
  *
- * Builds a toggle bar (Beautiful / System / Both / Source) above three view
- * slots. The Beautiful and Source views render eagerly; the System view renders
- * lazily on first switch to System or Both and is cached thereafter. Visibility
- * is driven entirely by the `data-mode` attribute on the container (see
- * styles.css) so switching modes never re-renders an already-built view.
+ * Builds a toolbar of the buttons in `opts.modes` above the view slots. Only the
+ * reachable slots are created: the Beautiful slot exists (and renders eagerly)
+ * only when `beautiful`/`both` is offered — so an unsupported type, whose modes
+ * are `[system, source]`, never invokes `renderBeautiful` and never produces a
+ * wasted error box. The System view renders lazily on first switch to
+ * System/Both and is cached. Visibility is driven by the `data-mode` attribute
+ * (see styles.css), so switching modes never re-renders an already-built view.
  *
  * Returns the container plus a `ready` promise that resolves once the eager
- * Beautiful render settles — Reading View awaits it so tests and downstream
- * passes observe a populated slot; Live Preview ignores it.
+ * Beautiful render settles (a resolved no-op when there is no Beautiful slot) —
+ * Reading View awaits it so tests and downstream passes observe a populated slot;
+ * Live Preview ignores it.
  */
 export function mountMermaidBlock(opts: MermaidBlockOptions): {
   container: HTMLElement;
   ready: Promise<void>;
 } {
-  const { host, source } = opts;
+  const { host, source, modes } = opts;
+  const offers = (mode: ViewMode): boolean => modes.includes(mode);
 
   const container = host.createDiv({ cls: "abm-block" });
   const bar = container.createDiv({ cls: "abm-toolbar" });
   const views = container.createDiv({ cls: "abm-views" });
 
-  // Order matters for the "Both" mode, which stacks Beautiful above System.
-  const beautifulSlot = views.createDiv({ cls: "abm-view abm-view-beautiful" });
-  const systemSlot = views.createDiv({ cls: "abm-view abm-view-system" });
+  // Create only the slots the offered modes can reach. Order matters for "Both",
+  // which stacks Beautiful above System.
+  const needsBeautiful = offers("beautiful") || offers("both");
+  const needsSystem = offers("system") || offers("both");
+  const beautifulSlot = needsBeautiful
+    ? views.createDiv({ cls: "abm-view abm-view-beautiful" })
+    : null;
+  const systemSlot = needsSystem
+    ? views.createDiv({ cls: "abm-view abm-view-system" })
+    : null;
   const sourceSlot = views.createDiv({ cls: "abm-view abm-view-source" });
 
   // Source view: NEVER carries `language-mermaid`, so a stray rebuild can never
@@ -273,14 +289,17 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
   const pre = sourceSlot.createEl("pre");
   pre.createEl("code", { cls: "abm-source-code", text: source });
 
-  // Beautiful eagerly; `ready` settles when it does. Never rejects — render
-  // implementations surface their own failures into the slot (see renderError),
-  // so a bare `await ready` in callers cannot raise an unhandled rejection.
-  const ready = Promise.resolve(opts.renderBeautiful(beautifulSlot)).catch(() => undefined);
+  // Beautiful eagerly when offered; `ready` settles when it does. Never rejects —
+  // render implementations surface their own failures into the slot (see
+  // renderError), so a bare `await ready` in callers cannot raise an unhandled
+  // rejection.
+  const ready = beautifulSlot
+    ? Promise.resolve(opts.renderBeautiful(beautifulSlot)).catch(() => undefined)
+    : Promise.resolve();
 
   let systemRendered = false;
   const ensureSystem = (): void => {
-    if (systemRendered) return;
+    if (systemRendered || !systemSlot) return;
     systemRendered = true;
     void opts.renderSystem(systemSlot);
   };
@@ -297,7 +316,9 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
     }
   };
 
+  // Buttons in canonical order, filtered to the offered modes.
   for (const mode of MODE_ORDER) {
+    if (!offers(mode)) continue;
     const button = bar.createEl("button", {
       cls: "abm-toolbar-btn",
       text: MODE_LABELS[mode],
@@ -322,11 +343,13 @@ export interface MermaidBlockOptions {
   host: HTMLElement;
   /** The mermaid fence source (declaration + body). */
   source: string;
+  /** Modes to offer, as toolbar buttons (rendered in {@link MODE_ORDER} order). */
+  modes: readonly ViewMode[];
   /** Read the block's current mode. */
   getMode: () => ViewMode;
   /** Persist the block's chosen mode. */
   setMode: (mode: ViewMode) => void;
-  /** Fill the Beautiful slot. Called once, eagerly. May be async. */
+  /** Fill the Beautiful slot. Called once, eagerly, only if Beautiful is offered. */
   renderBeautiful: (slot: HTMLElement) => void | Promise<void>;
   /** Fill the System slot with native output. Called lazily, once. May be async. */
   renderSystem: (slot: HTMLElement) => void | Promise<void>;
@@ -335,12 +358,32 @@ export interface MermaidBlockOptions {
 /**
  * Whether beautiful-mermaid supports this fence's diagram type.
  *
- * Used to decide whether to take over a block (build the container) or restore
- * it to Obsidian's native renderer.
+ * We take over EVERY mermaid block regardless; this only selects the block's
+ * default mode and the toolbar's button set (see {@link defaultModeFor} and
+ * {@link allowedModes}).
  */
 export function isSupportedType(source: string): boolean {
   const type = extractDiagramType(source);
   return type !== null && BEAUTIFUL_SUPPORTED.has(type);
+}
+
+/**
+ * The mode a block starts in: Beautiful for types beautiful-mermaid can draw,
+ * System (Obsidian's native render) for the rest.
+ */
+export function defaultModeFor(source: string): ViewMode {
+  return isSupportedType(source) ? "beautiful" : "system";
+}
+
+/**
+ * The modes a block offers, in toolbar order. Supported types get all four;
+ * unsupported types get only System + Source — Beautiful/Both are not shown (not
+ * merely disabled) because beautiful-mermaid cannot draw them.
+ */
+export function allowedModes(source: string): readonly ViewMode[] {
+  return isSupportedType(source)
+    ? (["beautiful", "system", "both", "source"] as const)
+    : (["system", "source"] as const);
 }
 
 /** Key under which a block's mode is remembered: the trimmed fence source. */
@@ -355,48 +398,23 @@ export function appendBeautiful(slot: HTMLElement, svg: string): void {
 }
 
 /**
- * Build a detached `<pre><code class="language-mermaid">{source}</code></pre>`.
+ * Recreate a `<pre><code class="language-mermaid">` *inside* `host` so Obsidian's
+ * native post-processor (which scans for `code.language-mermaid` later in the
+ * same pass) renders it there. Used for the System slot during a re-entrant
+ * `MarkdownRenderer.render` — this is how the System view obtains genuinely
+ * native output (and native error UI for diagrams mermaid rejects).
  *
- * The `language-mermaid` class is the load-bearing contract with Obsidian's
- * native post-processor (it scans for `code.language-mermaid`), so it lives in
- * exactly one place — both {@link recreateNativeFence} and
- * {@link restoreNativeFence} build their fence here.
+ * The `language-mermaid` class is the load-bearing contract with the native
+ * post-processor, so it lives only here.
  */
-function buildMermaidFence(doc: Document, source: string): HTMLPreElement {
+export function recreateNativeFence(host: HTMLElement, source: string): void {
+  const doc = host.ownerDocument ?? document;
   const pre = doc.createElement("pre");
   const code = doc.createElement("code");
   code.className = "language-mermaid";
   code.textContent = source;
   pre.appendChild(code);
-  return pre;
-}
-
-/**
- * Recreate a `<pre><code class="language-mermaid">` *inside* `host` so Obsidian's
- * native post-processor (which scans for `code.language-mermaid` later in the
- * same pass) renders it there. Used for the System slot during a re-entrant
- * `MarkdownRenderer.render`.
- */
-export function recreateNativeFence(host: HTMLElement, source: string): void {
-  host.appendChild(buildMermaidFence(host.ownerDocument ?? document, source));
-}
-
-/**
- * Restore the no-plugin DOM for an unsupported diagram type: replace our wrapper
- * element with a freshly built `<pre><code class="language-mermaid">` at the same
- * position, so Obsidian's native renderer processes it exactly as it would
- * without this plugin (preserving its source toggle, error fallback, and
- * `getSectionInfo`-dependent behavior). Falls back to appending inside `el` when
- * it has no parent (e.g. under test).
- */
-export function restoreNativeFence(el: HTMLElement, source: string): void {
-  const pre = buildMermaidFence(el.ownerDocument ?? document, source);
-
-  if (el.parentElement) {
-    el.replaceWith(pre);
-  } else {
-    el.appendChild(pre);
-  }
+  host.appendChild(pre);
 }
 
 /**
@@ -572,8 +590,8 @@ class MermaidEditorWidget extends WidgetType {
 }
 
 /**
- * Build the StateField that decorates supported mermaid fences with rendered
- * widgets in Live Preview. A fence is left as plain source whenever a selection
+ * Build the StateField that decorates every mermaid fence with a toggleable
+ * widget in Live Preview. A fence is left as plain source whenever a selection
  * range intersects it, so editing the block shows the underlying code.
  */
 export function createMermaidEditorExtension(
@@ -587,10 +605,9 @@ export function createMermaidEditorExtension(
     const docText = state.doc.toString();
 
     for (const fence of findMermaidFences(docText)) {
-      // Only decorate types beautiful-mermaid supports; leave the rest as plain
-      // fences so Obsidian's built-in Live Preview renderer handles them.
-      if (!isSupportedType(fence.source)) continue;
-
+      // Take over every mermaid fence (the widget's toolbar offers the type's
+      // modes); leaving any to the built-in widget would reintroduce duplicate
+      // rendering.
       if (selectionIntersects(state, fence.from, fence.to)) continue;
 
       builder.add(

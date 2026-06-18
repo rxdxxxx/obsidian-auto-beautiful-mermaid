@@ -17,13 +17,13 @@
 - [x] 3.1 Add a `systemRenderDepth` counter on the plugin (D3 re-entry guard)
 - [x] 3.2 In `handleMermaid`: if `systemRenderDepth > 0`, recreate `<pre><code class="language-mermaid">{source}</code></pre>` inside `el` and return (passthrough for both System render and unsupported delegation)
 - [x] 3.3 For supported types (depth 0): mount a `MermaidBlockController` in `el`; the `renderSystem` callback wraps `MarkdownRenderer.render(app, "```mermaid\n"+source+"\n```", slot, ctx.sourcePath ?? "", child)` with `systemRenderDepth++` before / `--` immediately after the call (before `await`)
-- [x] 3.4 For unsupported types (depth 0): restore the no-plugin DOM via `el.replaceWith(<pre><code class="language-mermaid">{source}</code></pre>)` so native renders it at its original position (fallback: build the pre inside `el` if `el.replaceWith` is unsafe). Do NOT mount a controller for these types
+- [x] 3.4 ~~For unsupported types: restore the no-plugin DOM and let native render~~ — **superseded by group 10**: unsupported types now also mount the container (default System)
 - [x] 3.5 Register a `MarkdownRenderChild` via `ctx.addChild` for controller/render lifecycle cleanup
 
 ## 4. Live Preview path
 
 - [x] 4.1 Update `MermaidEditorWidget.toDOM` to mount the same `MermaidBlockController` (reusing the mode store), with a `renderSystem` callback using `MarkdownRenderer.render`
-- [x] 4.2 Keep the StateField filtering to supported types only; unsupported fences remain untouched (native LP widget handles them)
+- [x] 4.2 ~~Keep the StateField filtering to supported types only~~ — **superseded by group 10**: decorate every mermaid fence (supported and unsupported)
 - [x] 4.3 Ensure `eq()` and the mode store keep mode stable across widget rebuilds from unrelated edits
 
 ## 5. Styling
@@ -45,9 +45,10 @@
 - [ ] 7.1 Reading View: supported block shows toggle; Beautiful default; no double render; switch through all 4 modes
 - [ ] 7.2 Reading View rebuild: scroll away/back, edit nearby text, toggle a frontmatter field → confirm still single render and mode honored where applicable
 - [ ] 7.3 Live Preview: toggle works; editing unrelated text preserves mode; entering the fence shows source
-- [ ] 7.4 Unsupported type (e.g. gantt): no toggle bar, native render + native source toggle/error UI intact
-- [ ] 7.5 **Unsupported-type native UX equivalence (hard gate, design D1):** compare against a no-plugin baseline — (a) gantt renders and its native source-toggle button works; (b) an intentionally-broken pie shows the native error fallback (message + source), not our error box; (c) `getSectionInfo`/`replaceCode`-dependent behavior is not mis-positioned. If any degrades, switch to the "do not take over unsupported types" fallback per D1
-- [ ] 7.6 Light/dark theme: toggle bar and views follow theme
+- [ ] 7.4 Unsupported type (e.g. gantt): container WITH toolbar, default System, only System+Source buttons; renders natively in the System slot
+- [ ] 7.5 **Native errors in System slot (revised gate, design D1):** a malformed unsupported diagram (e.g. broken pie) shows Obsidian's NATIVE error UI inside its System slot — not the plugin's `.abm-error` box. (Old equivalence-delegation gate is moot; we no longer delegate.)
+- [ ] 7.6 Light/dark theme: toolbar and views follow theme
+- [ ] 7.7 No multi-render: a note with many mermaid blocks (mixed supported/unsupported) shows exactly one rendering per block in both Reading View and Live Preview
 
 ## 8. Build & finalize
 
@@ -60,3 +61,14 @@
 - [x] 9.2 `.abm-block` position:relative; `.abm-toolbar` absolute top-right, lifted out of flow (no reflow on show/hide)
 - [x] 9.3 Hidden by default (opacity:0 + visibility:hidden, not display), revealed on `.abm-block:hover` and `.abm-block:focus-within`, with an opacity transition
 - [x] 9.4 Verified by build + existing tests (class rename touches no test selectors); applies to both Reading View and Live Preview via shared CSS
+
+## 10. Complete takeover + per-type default mode & button set (D1 flip)
+
+- [x] 10.1 `handleMermaid`: remove the unsupported-type `restoreNativeFence` branch; always mount the container (keep the `systemRenderDepth>0 → recreateNativeFence` re-entry guard)
+- [x] 10.2 Delete `restoreNativeFence` (no longer used); keep `recreateNativeFence`
+- [x] 10.3 Add exported `defaultModeFor(source)` (supported→beautiful, else→system) and `allowedModes(source)` (supported→4 modes, else→[system, source])
+- [x] 10.4 `plugin.getMode`: default via `defaultModeFor`, clamp a remembered mode to the type's allowed set
+- [x] 10.5 `mountMermaidBlock`: take `modes`, create only offered buttons + reachable slots; render Beautiful eagerly only when offered (no wasted throw for unsupported)
+- [x] 10.6 Live Preview `buildDecorations`: drop the `if(!isSupportedType) continue` — decorate every mermaid fence
+- [x] 10.7 Tests: defaultModeFor/allowedModes/getMode clamp; unsupported mounts container (System default, System+Source buttons, no Beautiful render); update LP + routing tests; 64 passing
+- [x] 10.8 Update design D1, spec, tasks to reflect the flip; `npm run build` + `npm test` green
