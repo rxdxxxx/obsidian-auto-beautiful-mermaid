@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
-import { renderMermaidSVGAsync } from "beautiful-mermaid";
+import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import mermaid from "mermaid";
 
-import AutoBeautifulMermaidPlugin, { extractDiagramType, renderError } from "./main";
+import AutoBeautifulMermaidPlugin, {
+  appendSvg,
+  extractDiagramType,
+  findMermaidFences,
+  renderError,
+} from "./main";
 
 // --- External dependency mocks -------------------------------------------------
 
 vi.mock("beautiful-mermaid", () => ({
+  renderMermaidSVG: vi.fn(),
   renderMermaidSVGAsync: vi.fn(),
 }));
 
@@ -19,8 +25,14 @@ vi.mock("mermaid", () => ({
 }));
 
 const renderBeautiful = renderMermaidSVGAsync as unknown as Mock;
+const renderBeautifulSync = renderMermaidSVG as unknown as Mock;
 const mermaidInitialize = mermaid.initialize as unknown as Mock;
 const mermaidRender = mermaid.render as unknown as Mock;
+
+/** Resolve pending microtasks so floating async work (widget fill) settles. */
+function flushPromises(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 /** Build a fresh plugin instance and a detached host element for a render call. */
 function makePlugin(): AutoBeautifulMermaidPlugin {
@@ -42,6 +54,7 @@ async function route(
 
 beforeEach(() => {
   renderBeautiful.mockReset();
+  renderBeautifulSync.mockReset();
   mermaidInitialize.mockReset();
   mermaidRender.mockReset();
   document.body.className = "";
@@ -267,5 +280,136 @@ describe("renderError", () => {
 
     const message = el.querySelector(".abm-error-message");
     expect((message as HTMLElement).textContent).toBe("plain string failure");
+  });
+});
+
+// --- appendSvg -----------------------------------------------------------------
+
+describe("appendSvg", () => {
+  it("parses and appends a valid <svg> as a real DOM node", () => {
+    const host = document.createElement("div");
+    appendSvg(host, '<svg id="parsed-output"><g>content</g></svg>');
+
+    const svg = host.querySelector("svg");
+    expect(svg).not.toBeNull();
+    expect((svg as Element).getAttribute("id")).toBe("parsed-output");
+    // The node is appended, not assigned via innerHTML string.
+    expect(host.childNodes.length).toBe(1);
+  });
+
+  it("binds the appended node to the host's owner document", () => {
+    const host = document.createElement("div");
+    appendSvg(host, "<svg>official</svg>");
+
+    expect((host.firstChild as Element).ownerDocument).toBe(host.ownerDocument);
+  });
+
+  it("throws when the parsed root is not an <svg> element", () => {
+    const host = document.createElement("div");
+    expect(() => appendSvg(host, "this is not svg")).toThrow(/invalid SVG/i);
+  });
+});
+
+// --- findMermaidFences ---------------------------------------------------------
+
+describe("findMermaidFences", () => {
+  it("locates a single mermaid fence and extracts its inner source", () => {
+    const doc = "intro\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\noutro";
+    const fences = findMermaidFences(doc);
+
+    expect(fences).toHaveLength(1);
+    expect(fences[0].source).toBe("flowchart TD\n  A --> B");
+    // The range starts at the opening fence, not the preceding blank line.
+    expect(doc.slice(fences[0].from, fences[0].from + 3)).toBe("```");
+  });
+
+  it("locates multiple fences in document order", () => {
+    const doc = "```mermaid\ngraph TD\n```\ntext\n```mermaid\npie\n```";
+    const fences = findMermaidFences(doc);
+
+    expect(fences.map((f) => f.source)).toEqual(["graph TD", "pie"]);
+  });
+
+  it("ignores fences for other languages", () => {
+    const doc = "```js\nconst a = 1;\n```\n\n```python\nx = 2\n```";
+    expect(findMermaidFences(doc)).toHaveLength(0);
+  });
+
+  it("supports tilde fences and matching closing markers", () => {
+    const doc = "~~~mermaid\nsequenceDiagram\n  A->>B: hi\n~~~";
+    const fences = findMermaidFences(doc);
+
+    expect(fences).toHaveLength(1);
+    expect(fences[0].source).toBe("sequenceDiagram\n  A->>B: hi");
+  });
+
+  it("returns no fences for an unterminated block", () => {
+    const doc = "```mermaid\nflowchart TD\n  A --> B";
+    expect(findMermaidFences(doc)).toHaveLength(0);
+  });
+});
+
+// --- Live Preview widget rendering (renderWidget) ------------------------------
+
+describe("renderWidget", () => {
+  it("renders a beautiful-mermaid type synchronously into .abm-beautiful", () => {
+    renderBeautifulSync.mockReturnValue('<svg id="lp-beautiful">x</svg>');
+    const plugin = makePlugin();
+
+    const host = plugin.renderWidget("flowchart TD\n  A --> B");
+
+    expect(renderBeautifulSync).toHaveBeenCalledTimes(1);
+    const container = host.querySelector(".abm-beautiful");
+    expect(container).not.toBeNull();
+    expect((container as HTMLElement).querySelector("svg")).not.toBeNull();
+    expect(host.querySelector(".abm-error")).toBeNull();
+  });
+
+  it("shows an error box when the synchronous beautiful render throws", () => {
+    renderBeautifulSync.mockImplementation(() => {
+      throw new Error("sync boom");
+    });
+    const plugin = makePlugin();
+
+    const host = plugin.renderWidget("flowchart TD\n  A --> B");
+
+    const errorBox = host.querySelector(".abm-error");
+    expect(errorBox).not.toBeNull();
+    expect((errorBox as HTMLElement).textContent).toContain("beautiful-mermaid");
+    expect((errorBox as HTMLElement).textContent).toContain("sync boom");
+  });
+
+  it("paints a placeholder for official types, then fills the SVG asynchronously", async () => {
+    mermaidRender.mockResolvedValue({ svg: "<svg>lp-official</svg>", bindFunctions: undefined });
+    const plugin = makePlugin();
+
+    const host = plugin.renderWidget("pie\n  title Pie");
+
+    // Synchronous return: official container with a loading placeholder.
+    const container = host.querySelector(".abm-official");
+    expect(container).not.toBeNull();
+    expect(host.querySelector(".abm-loading")).not.toBeNull();
+    expect(renderBeautifulSync).not.toHaveBeenCalled();
+
+    await flushPromises();
+
+    // Placeholder replaced by the rendered SVG.
+    expect(host.querySelector(".abm-loading")).toBeNull();
+    expect((container as HTMLElement).querySelector("svg")).not.toBeNull();
+    expect(mermaidRender).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the placeholder with an error box when the official render rejects", async () => {
+    mermaidRender.mockRejectedValue(new Error("lp official boom"));
+    const plugin = makePlugin();
+
+    const host = plugin.renderWidget("pie\n  title Pie");
+    await flushPromises();
+
+    expect(host.querySelector(".abm-loading")).toBeNull();
+    const errorBox = host.querySelector(".abm-error");
+    expect(errorBox).not.toBeNull();
+    expect((errorBox as HTMLElement).textContent).toContain("mermaid.js");
+    expect((errorBox as HTMLElement).textContent).toContain("lp official boom");
   });
 });

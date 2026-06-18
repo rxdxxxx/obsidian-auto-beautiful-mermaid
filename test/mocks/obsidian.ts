@@ -25,6 +25,10 @@ export class Plugin {
     // no-op
   }
 
+  registerEditorExtension(_extension: unknown): void {
+    // no-op
+  }
+
   addCommand(_command: unknown): unknown {
     // no-op
     return _command;
@@ -33,3 +37,11 @@ export class Plugin {
 
 /** Type-only export used by src/main.ts; erased at runtime. */
 export type MarkdownPostProcessorContext = Record<string, unknown>;
+
+/**
+ * Marker for the CodeMirror StateField that flags Live Preview mode. The real
+ * value is a `StateField` supplied by Obsidian; src/main.ts only reads it via
+ * `state.field(editorLivePreviewField, false)`, which tests never invoke, so a
+ * placeholder object is enough to satisfy the named import.
+ */
+export const editorLivePreviewField = {} as unknown;
