@@ -105,7 +105,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
  * of the first meaningful line (e.g. "flowchart TD" -> "flowchart",
  * "stateDiagram-v2" -> "statediagram-v2"). Returns null if nothing is found.
  */
-function extractDiagramType(source: string): string | null {
+export function extractDiagramType(source: string): string | null {
   const lines = source.split("\n");
   let inFrontmatter = false;
 
@@ -133,7 +133,7 @@ function extractDiagramType(source: string): string | null {
 }
 
 /** Render an error box with the engine name, the error message, and the raw source. */
-function renderError(
+export function renderError(
   el: HTMLElement,
   engine: string,
   error: unknown,

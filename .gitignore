@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Test coverage output
+coverage/
+
 # Build artifacts kept in repo for release: main.js is intentionally committed
 # (Obsidian loads it directly). Uncomment the next line to exclude it.
 # main.js
