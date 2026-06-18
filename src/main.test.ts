@@ -7,6 +7,7 @@ import AutoBeautifulMermaidPlugin, {
   appendSvg,
   extractDiagramType,
   findMermaidFences,
+  neutralizeNativeMermaid,
   renderError,
 } from "./main";
 
@@ -201,6 +202,74 @@ describe("beautiful-mermaid render path", () => {
     expect((code as HTMLElement).textContent).toBe(source);
 
     expect(el.querySelector(".abm-beautiful")).toBeNull();
+  });
+
+  it("renames a sibling code.language-mermaid on success (blocks the native PostProcessor)", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
+    const plugin = makePlugin();
+
+    // Mimic Reading View's layout: our processor's `el` sits alongside the
+    // original `pre > code.language-mermaid` under a shared wrapper.
+    const wrapper = document.createElement("div");
+    const pre = wrapper.createEl("pre");
+    const code = pre.createEl("code");
+    code.classList.add("language-mermaid");
+    const el = wrapper.createDiv();
+
+    await route(plugin, "flowchart TD\n  A --> B", el);
+
+    expect(code.classList.contains("language-mermaid")).toBe(false);
+    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
+  });
+
+  it("leaves code.language-mermaid intact on failure (native renderer can take over)", async () => {
+    renderBeautiful.mockRejectedValue(new Error("beautiful boom"));
+    const plugin = makePlugin();
+
+    const wrapper = document.createElement("div");
+    const pre = wrapper.createEl("pre");
+    const code = pre.createEl("code");
+    code.classList.add("language-mermaid");
+    const el = wrapper.createDiv();
+
+    await route(plugin, "flowchart TD\n  A --> B", el);
+
+    expect(code.classList.contains("language-mermaid")).toBe(true);
+    expect(code.classList.contains("language-mermaid-rendered")).toBe(false);
+  });
+});
+
+// --- neutralizeNativeMermaid ---------------------------------------------------
+
+describe("neutralizeNativeMermaid", () => {
+  it("renames a code.language-mermaid found inside el", () => {
+    const el = document.createElement("div");
+    const code = el.createEl("code");
+    code.classList.add("language-mermaid");
+
+    neutralizeNativeMermaid(el);
+
+    expect(code.classList.contains("language-mermaid")).toBe(false);
+    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
+  });
+
+  it("renames a code.language-mermaid found via el.parentElement", () => {
+    const parent = document.createElement("div");
+    const pre = parent.createEl("pre");
+    const code = pre.createEl("code");
+    code.classList.add("language-mermaid");
+    const el = parent.createDiv();
+
+    neutralizeNativeMermaid(el);
+
+    expect(code.classList.contains("language-mermaid")).toBe(false);
+    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
+  });
+
+  it("does nothing when no code.language-mermaid is present", () => {
+    const el = document.createElement("div");
+    expect(() => neutralizeNativeMermaid(el)).not.toThrow();
+    expect(el.querySelector("code.language-mermaid-rendered")).toBeNull();
   });
 });
 

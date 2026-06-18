@@ -93,6 +93,11 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
 
       const container = el.createDiv({ cls: "abm-container abm-beautiful" });
       appendSvg(container, svg);
+
+      // Stop Obsidian's built-in mermaid PostProcessor from drawing this fence a
+      // second time. Only do this on the success path; on failure we leave the
+      // fence intact so the built-in renderer can still handle it.
+      neutralizeNativeMermaid(el);
     } catch (error) {
       renderError(el, "beautiful-mermaid", error, source);
     }
@@ -176,6 +181,36 @@ export function extractDiagramType(source: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Stop Obsidian's built-in mermaid PostProcessor from re-rendering a fence we
+ * already drew via beautiful-mermaid.
+ *
+ * Obsidian registers its mermaid renderer as a *PostProcessor* (not a code-block
+ * processor): it independently scans the rendered DOM for `code.language-mermaid`
+ * elements and renders every match — `e.findAll('code.language-mermaid')`. That
+ * runs regardless of our code-block processor's priority, so a high priority
+ * alone can't prevent a double render.
+ *
+ * Renaming the class to `language-mermaid-rendered` makes the PostProcessor's
+ * `findAll('code.language-mermaid')` miss the element, so it skips the block.
+ *
+ * Our `el` is the container div the code-block processor hands us; the original
+ * fence lives in a sibling/ancestor `pre > code.language-mermaid`, so we search
+ * outward from `el` and rename the nearest match.
+ */
+export function neutralizeNativeMermaid(el: HTMLElement): void {
+  const code =
+    el.querySelector("code.language-mermaid") ??
+    el.parentElement?.querySelector("code.language-mermaid") ??
+    el.closest("pre")?.querySelector("code.language-mermaid") ??
+    null;
+
+  if (code) {
+    code.classList.remove("language-mermaid");
+    code.classList.add("language-mermaid-rendered");
+  }
 }
 
 /**
