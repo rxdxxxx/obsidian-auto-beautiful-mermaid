@@ -1,12 +1,16 @@
-import { editorLivePreviewField, MarkdownPostProcessorContext, Plugin } from "obsidian";
+import {
+  editorLivePreviewField,
+  MarkdownPostProcessorContext,
+  MarkdownRenderer,
+  Plugin,
+} from "obsidian";
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
-import mermaid from "mermaid";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 
 /**
  * Diagram type keywords that beautiful-mermaid fully supports.
- * Everything else is routed to the official mermaid.js engine.
+ * Every other type is left to Obsidian's built-in mermaid renderer.
  *
  * Compared lowercased against the first token of a code block.
  */
@@ -23,11 +27,17 @@ const BEAUTIFUL_SUPPORTED = new Set<string>([
 ]);
 
 /**
- * Priority for our code block processor. beautiful-mermaid-renderer registers
- * its mermaid processor at -100; a smaller (more negative) value runs earlier,
- * so -200 lets us intercept and route before any other plugin.
+ * Priority for our code block processor. A smaller (more negative) value runs
+ * earlier, so -200 lets us intercept and route before other plugins' processors.
  */
 const PROCESSOR_PRIORITY = -200;
+
+/**
+ * CSS class for the host element we render an unsupported diagram into when
+ * delegating to Obsidian's built-in renderer. Used as a re-entry marker: see
+ * `handleMermaid`.
+ */
+const NATIVE_HOST_CLASS = "abm-native-host";
 
 /** CSS variables passed to beautiful-mermaid so diagrams follow the Obsidian theme. */
 const BEAUTIFUL_OPTIONS = {
@@ -37,36 +47,39 @@ const BEAUTIFUL_OPTIONS = {
 } as const;
 
 export default class AutoBeautifulMermaidPlugin extends Plugin {
-  /** Monotonic id source for unique mermaid render targets. */
-  private renderSeq = 0;
-
   async onload(): Promise<void> {
-    // startOnLoad must be false — we drive rendering manually per code block.
-    mermaid.initialize({ startOnLoad: false });
-
-    // Reading View: Obsidian's post-processor pipeline.
+    // Reading View: a single processor for the `mermaid` fence language. We only
+    // take over the diagram types beautiful-mermaid supports; every other type
+    // is delegated back to Obsidian's built-in renderer (see `renderWithNative`)
+    // so its source-toggle and error UI are preserved.
     this.registerMarkdownCodeBlockProcessor(
       "mermaid",
       (source, el, ctx) => this.handleMermaid(source, el, ctx),
       PROCESSOR_PRIORITY,
     );
 
-    // Live Preview: a CodeMirror editor extension that replaces mermaid fences
-    // with rendered widgets while the cursor is outside them.
+    // Live Preview: a CodeMirror editor extension that replaces supported
+    // mermaid fences with rendered widgets while the cursor is outside them.
     this.registerEditorExtension(createMermaidEditorExtension(this));
   }
 
   private async handleMermaid(
     source: string,
     el: HTMLElement,
-    _ctx: MarkdownPostProcessorContext,
+    ctx: MarkdownPostProcessorContext,
   ): Promise<void> {
+    // Re-entry guard: `renderWithNative` delegates to MarkdownRenderer.render,
+    // which re-runs the markdown pipeline on a ```mermaid fence and may re-invoke
+    // this very processor. When that happens our `el` lives inside the native
+    // host we created, so bail out and let the built-in renderer take over.
+    if (el.closest(`.${NATIVE_HOST_CLASS}`) !== null) return;
+
     const diagramType = extractDiagramType(source);
 
     if (diagramType !== null && BEAUTIFUL_SUPPORTED.has(diagramType)) {
       await this.renderWithBeautiful(source, el);
     } else {
-      await this.renderWithOfficial(source, el);
+      await this.renderWithNative(source, el, ctx);
     }
   }
 
@@ -85,73 +98,48 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     }
   }
 
-  /** Render via official mermaid.js. On any error: show error + source, no fallback. */
-  private async renderWithOfficial(source: string, el: HTMLElement): Promise<void> {
-    try {
-      // Follow Obsidian's light/dark mode for the official engine.
-      const theme = document.body.classList.contains("theme-dark") ? "dark" : "default";
-      mermaid.initialize({ startOnLoad: false, theme });
-
-      const id = `abm-mermaid-${this.renderSeq++}`;
-      const { svg, bindFunctions } = await mermaid.render(id, source);
-
-      const container = el.createDiv({ cls: "abm-container abm-official" });
-      appendSvg(container, svg);
-      if (bindFunctions) {
-        bindFunctions(container);
-      }
-    } catch (error) {
-      renderError(el, "mermaid.js", error, source);
-    }
+  /**
+   * Delegate an unsupported diagram type to Obsidian's built-in mermaid
+   * renderer by re-rendering the fence through the markdown pipeline. This keeps
+   * the native source-toggle and error UI for types beautiful-mermaid can't
+   * draw. The output is wrapped in a `.abm-native-host` div that doubles as the
+   * re-entry marker checked in `handleMermaid`.
+   */
+  private async renderWithNative(
+    source: string,
+    el: HTMLElement,
+    ctx: MarkdownPostProcessorContext,
+  ): Promise<void> {
+    const host = el.createDiv({ cls: NATIVE_HOST_CLASS });
+    await MarkdownRenderer.render(
+      this.app,
+      "```mermaid\n" + source + "\n```",
+      host,
+      ctx.sourcePath ?? "",
+      this,
+    );
   }
 
   /**
    * Render a single fence into a freshly-created Live Preview widget host.
    *
-   * The beautiful-mermaid path is synchronous (`renderMermaidSVG`) because a
-   * WidgetType's `toDOM()` must return immediately. The official mermaid.js
-   * path is asynchronous, so it paints a placeholder first and fills the SVG in
-   * once the promise settles.
+   * Only supported types reach this method — `createMermaidEditorExtension`
+   * filters unsupported fences out before building a widget. The beautiful-mermaid
+   * path is synchronous (`renderMermaidSVG`) because a WidgetType's `toDOM()`
+   * must return immediately.
    */
   renderWidget(source: string): HTMLElement {
     const host = document.createElement("div");
-    const diagramType = extractDiagramType(source);
 
-    if (diagramType !== null && BEAUTIFUL_SUPPORTED.has(diagramType)) {
-      try {
-        const svg = renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS });
-        const container = host.createDiv({ cls: "abm-container abm-beautiful" });
-        appendSvg(container, svg);
-      } catch (error) {
-        renderError(host, "beautiful-mermaid", error, source);
-      }
-    } else {
-      const container = host.createDiv({ cls: "abm-container abm-official" });
-      container.createDiv({ cls: "abm-loading", text: "Rendering diagram…" });
-      void this.fillOfficialWidget(source, container);
+    try {
+      const svg = renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS });
+      const container = host.createDiv({ cls: "abm-container abm-beautiful" });
+      appendSvg(container, svg);
+    } catch (error) {
+      renderError(host, "beautiful-mermaid", error, source);
     }
 
     return host;
-  }
-
-  /** Asynchronously render the official engine into an already-mounted widget host. */
-  private async fillOfficialWidget(source: string, container: HTMLElement): Promise<void> {
-    try {
-      const theme = document.body.classList.contains("theme-dark") ? "dark" : "default";
-      mermaid.initialize({ startOnLoad: false, theme });
-
-      const id = `abm-mermaid-${this.renderSeq++}`;
-      const { svg, bindFunctions } = await mermaid.render(id, source);
-
-      container.replaceChildren();
-      appendSvg(container, svg);
-      if (bindFunctions) {
-        bindFunctions(container);
-      }
-    } catch (error) {
-      container.replaceChildren();
-      renderError(container, "mermaid.js", error, source);
-    }
   }
 }
 
@@ -331,6 +319,11 @@ export function createMermaidEditorExtension(
     const docText = state.doc.toString();
 
     for (const fence of findMermaidFences(docText)) {
+      // Only decorate types beautiful-mermaid supports; leave the rest as plain
+      // fences so Obsidian's built-in Live Preview renderer handles them.
+      const diagramType = extractDiagramType(fence.source);
+      if (diagramType === null || !BEAUTIFUL_SUPPORTED.has(diagramType)) continue;
+
       if (selectionIntersects(state, fence.from, fence.to)) continue;
 
       builder.add(

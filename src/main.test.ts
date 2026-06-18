@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
-import mermaid from "mermaid";
+import { MarkdownRenderer } from "obsidian";
 
 import AutoBeautifulMermaidPlugin, {
   appendSvg,
@@ -17,24 +17,12 @@ vi.mock("beautiful-mermaid", () => ({
   renderMermaidSVGAsync: vi.fn(),
 }));
 
-vi.mock("mermaid", () => ({
-  default: {
-    initialize: vi.fn(),
-    render: vi.fn(),
-  },
-}));
-
 const renderBeautiful = renderMermaidSVGAsync as unknown as Mock;
 const renderBeautifulSync = renderMermaidSVG as unknown as Mock;
-const mermaidInitialize = mermaid.initialize as unknown as Mock;
-const mermaidRender = mermaid.render as unknown as Mock;
+// Unsupported diagram types are delegated to Obsidian's built-in renderer.
+const markdownRender = vi.spyOn(MarkdownRenderer, "render");
 
-/** Resolve pending microtasks so floating async work (widget fill) settles. */
-function flushPromises(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-/** Build a fresh plugin instance and a detached host element for a render call. */
+/** Build a fresh plugin instance for a render call. */
 function makePlugin(): AutoBeautifulMermaidPlugin {
   // The mocked Plugin base class takes (app, manifest) and ignores them.
   return new AutoBeautifulMermaidPlugin({} as never, {} as never);
@@ -49,19 +37,14 @@ async function route(
   // handleMermaid is private at the type level only; reachable at runtime.
   await (plugin as unknown as {
     handleMermaid: (s: string, e: HTMLElement, c: unknown) => Promise<void>;
-  }).handleMermaid(source, el, {});
+  }).handleMermaid(source, el, { sourcePath: "note.md" });
 }
 
 beforeEach(() => {
   renderBeautiful.mockReset();
   renderBeautifulSync.mockReset();
-  mermaidInitialize.mockReset();
-  mermaidRender.mockReset();
-  document.body.className = "";
-});
-
-afterEach(() => {
-  document.body.className = "";
+  markdownRender.mockReset();
+  markdownRender.mockResolvedValue(undefined);
 });
 
 // --- extractDiagramType --------------------------------------------------------
@@ -128,7 +111,7 @@ describe("routing decision", () => {
 
       expect(renderBeautiful).toHaveBeenCalledTimes(1);
       expect(renderBeautiful).toHaveBeenCalledWith(source, expect.any(Object));
-      expect(mermaidRender).not.toHaveBeenCalled();
+      expect(markdownRender).not.toHaveBeenCalled();
     },
   );
 
@@ -137,19 +120,25 @@ describe("routing decision", () => {
     ["pie", "pie\n  title Pie\n  \"A\" : 10"],
     ["timeline", "timeline\n  title History"],
     ["mindmap", "mindmap\n  root((center))"],
-  ])("routes unsupported type %s to official mermaid.js", async (_label, source) => {
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions: undefined });
+  ])("delegates unsupported type %s to the built-in renderer", async (_label, source) => {
     const plugin = makePlugin();
     const el = document.createElement("div");
 
     await route(plugin, source, el);
 
-    expect(mermaidRender).toHaveBeenCalledTimes(1);
+    expect(markdownRender).toHaveBeenCalledTimes(1);
+    // The fence is re-wrapped as a ```mermaid block for the native pipeline.
+    expect(markdownRender).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(source),
+      expect.any(HTMLElement),
+      "note.md",
+      plugin,
+    );
     expect(renderBeautiful).not.toHaveBeenCalled();
   });
 
-  it("falls back to official mermaid.js when no type can be extracted", async () => {
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions: undefined });
+  it("delegates to the built-in renderer when no type can be extracted", async () => {
     const plugin = makePlugin();
     const el = document.createElement("div");
 
@@ -157,7 +146,20 @@ describe("routing decision", () => {
     await route(plugin, "\n%% only a comment\n   \n", el);
 
     expect(extractDiagramType("\n%% only a comment\n   \n")).toBeNull();
-    expect(mermaidRender).toHaveBeenCalledTimes(1);
+    expect(markdownRender).toHaveBeenCalledTimes(1);
+    expect(renderBeautiful).not.toHaveBeenCalled();
+  });
+
+  it("does not re-delegate when re-invoked inside a native host (re-entry guard)", async () => {
+    const plugin = makePlugin();
+    // Simulate the re-entrant call: el lives inside an already-created host.
+    const outer = document.createElement("div");
+    outer.className = "abm-native-host";
+    const inner = outer.createDiv();
+
+    await route(plugin, "pie\n  title Pie", inner);
+
+    expect(markdownRender).not.toHaveBeenCalled();
     expect(renderBeautiful).not.toHaveBeenCalled();
   });
 });
@@ -202,75 +204,6 @@ describe("beautiful-mermaid render path", () => {
   });
 });
 
-// --- official mermaid.js render path -------------------------------------------
-
-describe("official mermaid.js render path", () => {
-  it("renders into an .abm-official container on success", async () => {
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions: undefined });
-    const plugin = makePlugin();
-    const el = document.createElement("div");
-
-    await route(plugin, "pie\n  title Pie", el);
-
-    const container = el.querySelector(".abm-official");
-    expect(container).not.toBeNull();
-    expect((container as HTMLElement).innerHTML).toContain("official");
-    expect(el.querySelector(".abm-error")).toBeNull();
-  });
-
-  it("initializes mermaid with theme 'dark' in dark mode", async () => {
-    document.body.classList.add("theme-dark");
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions: undefined });
-    const plugin = makePlugin();
-    const el = document.createElement("div");
-
-    await route(plugin, "pie\n  title Pie", el);
-
-    expect(mermaidInitialize).toHaveBeenCalledWith(
-      expect.objectContaining({ theme: "dark" }),
-    );
-  });
-
-  it("initializes mermaid with theme 'default' in light mode", async () => {
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions: undefined });
-    const plugin = makePlugin();
-    const el = document.createElement("div");
-
-    await route(plugin, "pie\n  title Pie", el);
-
-    expect(mermaidInitialize).toHaveBeenCalledWith(
-      expect.objectContaining({ theme: "default" }),
-    );
-  });
-
-  it("calls bindFunctions with the container when provided", async () => {
-    const bindFunctions = vi.fn();
-    mermaidRender.mockResolvedValue({ svg: "<svg>official</svg>", bindFunctions });
-    const plugin = makePlugin();
-    const el = document.createElement("div");
-
-    await route(plugin, "pie\n  title Pie", el);
-
-    const container = el.querySelector(".abm-official");
-    expect(bindFunctions).toHaveBeenCalledWith(container);
-  });
-
-  it("renders an .abm-error box mentioning mermaid.js on failure", async () => {
-    mermaidRender.mockRejectedValue(new Error("official boom"));
-    const plugin = makePlugin();
-    const el = document.createElement("div");
-
-    await route(plugin, "pie\n  title Pie", el);
-
-    const errorBox = el.querySelector(".abm-error");
-    expect(errorBox).not.toBeNull();
-    const text = (errorBox as HTMLElement).textContent ?? "";
-    expect(text).toContain("mermaid.js");
-    expect(text).toContain("official boom");
-    expect(el.querySelector(".abm-official")).toBeNull();
-  });
-});
-
 // --- renderError ---------------------------------------------------------------
 
 describe("renderError", () => {
@@ -299,7 +232,7 @@ describe("appendSvg", () => {
 
   it("binds the appended node to the host's owner document", () => {
     const host = document.createElement("div");
-    appendSvg(host, "<svg>official</svg>");
+    appendSvg(host, "<svg>content</svg>");
 
     expect((host.firstChild as Element).ownerDocument).toBe(host.ownerDocument);
   });
@@ -377,39 +310,5 @@ describe("renderWidget", () => {
     expect(errorBox).not.toBeNull();
     expect((errorBox as HTMLElement).textContent).toContain("beautiful-mermaid");
     expect((errorBox as HTMLElement).textContent).toContain("sync boom");
-  });
-
-  it("paints a placeholder for official types, then fills the SVG asynchronously", async () => {
-    mermaidRender.mockResolvedValue({ svg: "<svg>lp-official</svg>", bindFunctions: undefined });
-    const plugin = makePlugin();
-
-    const host = plugin.renderWidget("pie\n  title Pie");
-
-    // Synchronous return: official container with a loading placeholder.
-    const container = host.querySelector(".abm-official");
-    expect(container).not.toBeNull();
-    expect(host.querySelector(".abm-loading")).not.toBeNull();
-    expect(renderBeautifulSync).not.toHaveBeenCalled();
-
-    await flushPromises();
-
-    // Placeholder replaced by the rendered SVG.
-    expect(host.querySelector(".abm-loading")).toBeNull();
-    expect((container as HTMLElement).querySelector("svg")).not.toBeNull();
-    expect(mermaidRender).toHaveBeenCalledTimes(1);
-  });
-
-  it("replaces the placeholder with an error box when the official render rejects", async () => {
-    mermaidRender.mockRejectedValue(new Error("lp official boom"));
-    const plugin = makePlugin();
-
-    const host = plugin.renderWidget("pie\n  title Pie");
-    await flushPromises();
-
-    expect(host.querySelector(".abm-loading")).toBeNull();
-    const errorBox = host.querySelector(".abm-error");
-    expect(errorBox).not.toBeNull();
-    expect((errorBox as HTMLElement).textContent).toContain("mermaid.js");
-    expect((errorBox as HTMLElement).textContent).toContain("lp official boom");
   });
 });

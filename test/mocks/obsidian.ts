@@ -39,6 +39,23 @@ export class Plugin {
 export type MarkdownPostProcessorContext = Record<string, unknown>;
 
 /**
+ * Minimal mock of `MarkdownRenderer`. src/main.ts delegates unsupported diagram
+ * types to `MarkdownRenderer.render`; tests spy on this static method to assert
+ * the routing decision. The default implementation is an inert resolved promise.
+ */
+export class MarkdownRenderer {
+  static render(
+    _app: unknown,
+    _markdown: string,
+    _el: HTMLElement,
+    _sourcePath: string,
+    _component: unknown,
+  ): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/**
  * Marker for the CodeMirror StateField that flags Live Preview mode. The real
  * value is a `StateField` supplied by Obsidian; src/main.ts only reads it via
  * `state.field(editorLivePreviewField, false)`, which tests never invoke, so a
