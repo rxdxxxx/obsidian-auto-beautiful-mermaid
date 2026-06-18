@@ -39,6 +39,27 @@ export class Plugin {
 export type MarkdownPostProcessorContext = Record<string, unknown>;
 
 /**
+ * Minimal mock of `MarkdownRenderChild`. src/main.ts constructs one as the
+ * lifecycle `component` passed to `MarkdownRenderer.render` for a System view.
+ * Only the constructor shape is exercised in tests.
+ */
+export class MarkdownRenderChild {
+  containerEl: HTMLElement;
+
+  constructor(containerEl: HTMLElement) {
+    this.containerEl = containerEl;
+  }
+
+  onload(): void {
+    // no-op
+  }
+
+  onunload(): void {
+    // no-op
+  }
+}
+
+/**
  * Minimal mock of `MarkdownRenderer`. src/main.ts delegates unsupported diagram
  * types to `MarkdownRenderer.render`; tests spy on this static method to assert
  * the routing decision. The default implementation is an inert resolved promise.

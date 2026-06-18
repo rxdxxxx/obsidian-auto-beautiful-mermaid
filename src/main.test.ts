@@ -5,10 +5,14 @@ import { MarkdownRenderer } from "obsidian";
 
 import AutoBeautifulMermaidPlugin, {
   appendSvg,
+  DEFAULT_MODE,
   extractDiagramType,
   findMermaidFences,
-  neutralizeNativeMermaid,
+  isSupportedType,
+  modeKey,
+  mountMermaidBlock,
   renderError,
+  type ViewMode,
 } from "./main";
 
 // --- External dependency mocks -------------------------------------------------
@@ -20,7 +24,6 @@ vi.mock("beautiful-mermaid", () => ({
 
 const renderBeautiful = renderMermaidSVGAsync as unknown as Mock;
 const renderBeautifulSync = renderMermaidSVG as unknown as Mock;
-// Unsupported diagram types are delegated to Obsidian's built-in renderer.
 const markdownRender = vi.spyOn(MarkdownRenderer, "render");
 
 /** Build a fresh plugin instance for a render call. */
@@ -29,16 +32,37 @@ function makePlugin(): AutoBeautifulMermaidPlugin {
   return new AutoBeautifulMermaidPlugin({} as never, {} as never);
 }
 
-/** Drive a single mermaid code block through the plugin's router. */
+/** Reach the plugin's private members at runtime for white-box assertions. */
+function internals(plugin: AutoBeautifulMermaidPlugin): {
+  handleMermaid: (s: string, e: HTMLElement, c: unknown) => Promise<void>;
+  renderSystemInto: (
+    slot: HTMLElement,
+    source: string,
+    sourcePath: string,
+    component: unknown,
+  ) => Promise<void>;
+  systemRenderDepth: number;
+} {
+  return plugin as unknown as never;
+}
+
+/** Drive a single mermaid code block through the plugin's Reading View router. */
 async function route(
   plugin: AutoBeautifulMermaidPlugin,
   source: string,
   el: HTMLElement,
 ): Promise<void> {
-  // handleMermaid is private at the type level only; reachable at runtime.
-  await (plugin as unknown as {
-    handleMermaid: (s: string, e: HTMLElement, c: unknown) => Promise<void>;
-  }).handleMermaid(source, el, { sourcePath: "note.md" });
+  await internals(plugin).handleMermaid(source, el, { sourcePath: "note.md" });
+}
+
+/** A minimal mutable mode holder for direct controller tests. */
+function modeHolder(initial: ViewMode = DEFAULT_MODE): {
+  getMode: () => ViewMode;
+  setMode: (m: ViewMode) => void;
+  current: () => ViewMode;
+} {
+  let mode = initial;
+  return { getMode: () => mode, setMode: (m) => (mode = m), current: () => mode };
 }
 
 beforeEach(() => {
@@ -86,82 +110,309 @@ describe("extractDiagramType", () => {
   });
 });
 
-// --- Routing decision (handleMermaid) ------------------------------------------
+// --- isSupportedType / modeKey -------------------------------------------------
 
-describe("routing decision", () => {
-  const BEAUTIFUL_CASES: Array<[string, string]> = [
-    ["graph", "graph TD\n  A --> B"],
-    ["flowchart", "flowchart LR\n  A --> B"],
-    ["stateDiagram", "stateDiagram\n  [*] --> S1"],
-    ["stateDiagram-v2", "stateDiagram-v2\n  [*] --> S1"],
-    ["sequenceDiagram", "sequenceDiagram\n  A->>B: hi"],
-    ["classDiagram", "classDiagram\n  class A"],
-    ["erDiagram", "erDiagram\n  A ||--o{ B : has"],
-    ["xychart", "xychart\n  title T"],
-    ["xychart-beta", "xychart-beta\n  title T"],
-  ];
+describe("isSupportedType", () => {
+  it.each([
+    "graph TD\n A-->B",
+    "flowchart LR\n A-->B",
+    "stateDiagram\n [*]-->S",
+    "stateDiagram-v2\n [*]-->S",
+    "sequenceDiagram\n A->>B: hi",
+    "classDiagram\n class A",
+    "erDiagram\n A ||--o{ B : has",
+    "xychart\n title T",
+    "xychart-beta\n title T",
+  ])("is true for supported type %j", (source) => {
+    expect(isSupportedType(source)).toBe(true);
+  });
 
-  it.each(BEAUTIFUL_CASES)(
-    "routes %s to beautiful-mermaid",
-    async (_label, source) => {
-      renderBeautiful.mockResolvedValue("<svg>ok</svg>");
-      const plugin = makePlugin();
-      const el = document.createElement("div");
-
-      await route(plugin, source, el);
-
-      expect(renderBeautiful).toHaveBeenCalledTimes(1);
-      expect(renderBeautiful).toHaveBeenCalledWith(source, expect.any(Object));
-      expect(markdownRender).not.toHaveBeenCalled();
+  it.each(["gantt\n title G", "pie\n \"A\": 10", "timeline\n title T", "mindmap\n root"])(
+    "is false for unsupported type %j",
+    (source) => {
+      expect(isSupportedType(source)).toBe(false);
     },
   );
+
+  it("is false when no type can be extracted", () => {
+    expect(isSupportedType("\n%% only a comment\n  \n")).toBe(false);
+  });
+});
+
+describe("modeKey", () => {
+  it("keys on the trimmed source so surrounding whitespace does not split a block", () => {
+    expect(modeKey("  flowchart TD\n A-->B  ")).toBe("flowchart TD\n A-->B");
+    expect(modeKey("flowchart TD\n A-->B")).toBe(modeKey("\nflowchart TD\n A-->B\n"));
+  });
+});
+
+// --- Reading View routing (handleMermaid) --------------------------------------
+
+describe("Reading View routing", () => {
+  const SUPPORTED = "flowchart TD\n  A --> B";
+
+  it("mounts a toggleable container for a supported type and renders Beautiful eagerly", async () => {
+    renderBeautiful.mockResolvedValue("<svg id=\"ok\">x</svg>");
+    const plugin = makePlugin();
+    const el = document.createElement("div");
+
+    await route(plugin, SUPPORTED, el);
+
+    expect(el.querySelector(".abm-block")).not.toBeNull();
+    expect(renderBeautiful).toHaveBeenCalledTimes(1);
+    expect(el.querySelector(".abm-beautiful svg")).not.toBeNull();
+    // System is lazy: not rendered until the reader switches to it.
+    expect(markdownRender).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["gantt", "gantt\n  title A Gantt"],
     ["pie", "pie\n  title Pie\n  \"A\" : 10"],
     ["timeline", "timeline\n  title History"],
     ["mindmap", "mindmap\n  root((center))"],
-  ])("delegates unsupported type %s to the built-in renderer", async (_label, source) => {
+  ])("restores a plain native fence for unsupported type %s", async (_label, source) => {
     const plugin = makePlugin();
-    const el = document.createElement("div");
+    // Attach to a parent so el.replaceWith swaps in the restored <pre>.
+    const parent = document.createElement("div");
+    const el = parent.createDiv();
 
     await route(plugin, source, el);
 
-    expect(markdownRender).toHaveBeenCalledTimes(1);
-    // The fence is re-wrapped as a ```mermaid block for the native pipeline.
-    expect(markdownRender).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining(source),
-      expect.any(HTMLElement),
-      "note.md",
-      plugin,
-    );
+    // No container, no beautiful/native MarkdownRenderer call: native PP handles it.
+    expect(parent.querySelector(".abm-block")).toBeNull();
     expect(renderBeautiful).not.toHaveBeenCalled();
+    expect(markdownRender).not.toHaveBeenCalled();
+    // A plain <pre><code class="language-mermaid"> is present at the original spot.
+    const code = parent.querySelector("pre > code.language-mermaid");
+    expect(code).not.toBeNull();
+    expect((code as HTMLElement).textContent).toBe(source);
   });
 
-  it("delegates to the built-in renderer when no type can be extracted", async () => {
+  it("restores a native fence when no type can be extracted", async () => {
+    const plugin = makePlugin();
+    const parent = document.createElement("div");
+    const el = parent.createDiv();
+
+    await route(plugin, "\n%% only a comment\n   \n", el);
+
+    expect(parent.querySelector("pre > code.language-mermaid")).not.toBeNull();
+    expect(renderBeautiful).not.toHaveBeenCalled();
+    expect(markdownRender).not.toHaveBeenCalled();
+  });
+
+  it("re-entry guard: while inside a System render it recreates the fence, not a container", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
+    const plugin = makePlugin();
+    internals(plugin).systemRenderDepth = 1; // simulate being inside MarkdownRenderer.render
+    const el = document.createElement("div");
+
+    await route(plugin, SUPPORTED, el);
+
+    expect(el.querySelector(".abm-block")).toBeNull();
+    expect(el.querySelector("pre > code.language-mermaid")).not.toBeNull();
+    expect(renderBeautiful).not.toHaveBeenCalled();
+    expect(markdownRender).not.toHaveBeenCalled();
+  });
+});
+
+// --- No-double-render invariant ------------------------------------------------
+
+describe("no-double-render invariant", () => {
+  const SUPPORTED = "flowchart TD\n  A --> B";
+
+  /** Stand-in for Obsidian's native PP scan. */
+  const nativeScanCount = (root: HTMLElement): number =>
+    root.querySelectorAll("code.language-mermaid").length;
+
+  it("an owned block in Beautiful mode exposes zero native-renderable nodes", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
     const plugin = makePlugin();
     const el = document.createElement("div");
 
-    // Only comments/blank lines -> extractDiagramType returns null.
-    await route(plugin, "\n%% only a comment\n   \n", el);
+    await route(plugin, SUPPORTED, el);
 
-    expect(extractDiagramType("\n%% only a comment\n   \n")).toBeNull();
-    expect(markdownRender).toHaveBeenCalledTimes(1);
-    expect(renderBeautiful).not.toHaveBeenCalled();
+    expect(el.querySelector(".abm-block")).not.toBeNull();
+    expect(nativeScanCount(el)).toBe(0);
+    // Source view uses a neutral class, never language-mermaid.
+    expect(el.querySelector(".abm-view-source code.abm-source-code")).not.toBeNull();
   });
 
-  it("does not re-delegate when re-invoked inside a native host (re-entry guard)", async () => {
+  it("is idempotent: a rebuild pass yields the same zero-node result", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
     const plugin = makePlugin();
-    // Simulate the re-entrant call: el lives inside an already-created host.
-    const outer = document.createElement("div");
-    outer.className = "abm-native-host";
-    const inner = outer.createDiv();
 
-    await route(plugin, "pie\n  title Pie", inner);
+    const first = document.createElement("div");
+    await route(plugin, SUPPORTED, first);
+    const second = document.createElement("div"); // simulate rebuild from cached HTML
+    await route(plugin, SUPPORTED, second);
 
-    expect(markdownRender).not.toHaveBeenCalled();
-    expect(renderBeautiful).not.toHaveBeenCalled();
+    expect(nativeScanCount(first)).toBe(0);
+    expect(nativeScanCount(second)).toBe(0);
+    expect(second.querySelector(".abm-block")).not.toBeNull();
+  });
+
+  it("native output is confined to the System slot when System mode is active", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
+    // Mock MarkdownRenderer.render to emulate native output landing in the slot.
+    markdownRender.mockImplementation(async (_app, _md, slot) => {
+      (slot as HTMLElement).createDiv({ cls: "mermaid" });
+    });
+    const plugin = makePlugin();
+    const el = document.createElement("div");
+
+    await route(plugin, SUPPORTED, el);
+    const systemBtn = el.querySelector('button[data-mode="system"]') as HTMLElement;
+    systemBtn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const systemSlot = el.querySelector(".abm-view-system") as HTMLElement;
+    expect(systemSlot.querySelector(".mermaid")).not.toBeNull();
+    // The native render is scoped to the slot, nowhere else.
+    expect(el.querySelectorAll(".mermaid").length).toBe(1);
+  });
+});
+
+// --- System render re-entry guard ----------------------------------------------
+
+describe("renderSystemInto re-entry guard", () => {
+  it("raises the depth flag only during the synchronous render call, then clears it", async () => {
+    const plugin = makePlugin();
+    let depthDuringCall = -1;
+    markdownRender.mockImplementation(() => {
+      depthDuringCall = internals(plugin).systemRenderDepth;
+      return Promise.resolve();
+    });
+    const slot = document.createElement("div");
+
+    await internals(plugin).renderSystemInto(slot, "flowchart TD\n A-->B", "note.md", plugin);
+
+    expect(depthDuringCall).toBe(1);
+    expect(internals(plugin).systemRenderDepth).toBe(0);
+    expect(markdownRender).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("flowchart TD\n A-->B"),
+      slot,
+      "note.md",
+      plugin,
+    );
+  });
+
+  it("does not leak the flag: a later block still builds a full container", async () => {
+    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
+    const plugin = makePlugin();
+    const slot = document.createElement("div");
+    await internals(plugin).renderSystemInto(slot, "flowchart TD\n A-->B", "n.md", plugin);
+
+    const el = document.createElement("div");
+    await route(plugin, "flowchart TD\n  A --> B", el);
+
+    expect(el.querySelector(".abm-block")).not.toBeNull();
+    expect(el.querySelector("code.language-mermaid")).toBeNull();
+  });
+
+  it("renders an error box in the slot when the System render rejects", async () => {
+    const plugin = makePlugin();
+    markdownRender.mockRejectedValue(new Error("system boom"));
+    const slot = document.createElement("div");
+
+    await internals(plugin).renderSystemInto(slot, "flowchart TD\n A-->B", "n.md", plugin);
+
+    const errorBox = slot.querySelector(".abm-error");
+    expect(errorBox).not.toBeNull();
+    expect((errorBox as HTMLElement).textContent).toContain("system boom");
+    expect(internals(plugin).systemRenderDepth).toBe(0);
+  });
+});
+
+// --- mountMermaidBlock controller ----------------------------------------------
+
+describe("mountMermaidBlock", () => {
+  const SOURCE = "flowchart TD\n  A --> B";
+
+  it("defaults to Beautiful, renders it eagerly, and renders System lazily", async () => {
+    const host = document.createElement("div");
+    const renderB = vi.fn();
+    const renderS = vi.fn();
+    const mode = modeHolder();
+
+    const { container, ready } = mountMermaidBlock({
+      host,
+      source: SOURCE,
+      getMode: mode.getMode,
+      setMode: mode.setMode,
+      renderBeautiful: renderB,
+      renderSystem: renderS,
+    });
+    await ready;
+
+    expect(container.dataset.mode).toBe("beautiful");
+    expect(renderB).toHaveBeenCalledTimes(1);
+    expect(renderS).not.toHaveBeenCalled();
+    expect(
+      (container.querySelector('button[data-mode="beautiful"]') as HTMLElement).getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+  });
+
+  it("switches modes: System renders once and is cached across later switches", () => {
+    const host = document.createElement("div");
+    const renderS = vi.fn();
+    const mode = modeHolder();
+
+    const { container } = mountMermaidBlock({
+      host,
+      source: SOURCE,
+      getMode: mode.getMode,
+      setMode: mode.setMode,
+      renderBeautiful: vi.fn(),
+      renderSystem: renderS,
+    });
+
+    (container.querySelector('button[data-mode="system"]') as HTMLElement).click();
+    expect(container.dataset.mode).toBe("system");
+    expect(mode.current()).toBe("system");
+    expect(renderS).toHaveBeenCalledTimes(1);
+
+    (container.querySelector('button[data-mode="both"]') as HTMLElement).click();
+    expect(container.dataset.mode).toBe("both");
+    expect(renderS).toHaveBeenCalledTimes(1); // cached, not re-rendered
+
+    (container.querySelector('button[data-mode="source"]') as HTMLElement).click();
+    expect(container.dataset.mode).toBe("source");
+  });
+
+  it("the Source view carries no language-mermaid class", () => {
+    const host = document.createElement("div");
+    mountMermaidBlock({
+      host,
+      source: SOURCE,
+      getMode: () => "source",
+      setMode: vi.fn(),
+      renderBeautiful: vi.fn(),
+      renderSystem: vi.fn(),
+    });
+
+    expect(host.querySelector(".abm-view-source code.abm-source-code")?.textContent).toBe(SOURCE);
+    expect(host.querySelector("code.language-mermaid")).toBeNull();
+  });
+
+  it("restores a remembered mode on (re)mount, rendering System eagerly for Both", () => {
+    const host = document.createElement("div");
+    const renderS = vi.fn();
+
+    const { container } = mountMermaidBlock({
+      host,
+      source: SOURCE,
+      getMode: () => "both",
+      setMode: vi.fn(),
+      renderBeautiful: vi.fn(),
+      renderSystem: renderS,
+    });
+
+    expect(container.dataset.mode).toBe("both");
+    expect(renderS).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -196,80 +447,11 @@ describe("beautiful-mermaid render path", () => {
     expect(text).toContain("beautiful-mermaid");
     expect(text).toContain("beautiful boom");
 
-    // Original source is preserved in a <pre><code> block.
     const code = el.querySelector(".abm-error pre code");
     expect(code).not.toBeNull();
     expect((code as HTMLElement).textContent).toBe(source);
 
     expect(el.querySelector(".abm-beautiful")).toBeNull();
-  });
-
-  it("renames a sibling code.language-mermaid on success (blocks the native PostProcessor)", async () => {
-    renderBeautiful.mockResolvedValue("<svg>ok</svg>");
-    const plugin = makePlugin();
-
-    // Mimic Reading View's layout: our processor's `el` sits alongside the
-    // original `pre > code.language-mermaid` under a shared wrapper.
-    const wrapper = document.createElement("div");
-    const pre = wrapper.createEl("pre");
-    const code = pre.createEl("code");
-    code.classList.add("language-mermaid");
-    const el = wrapper.createDiv();
-
-    await route(plugin, "flowchart TD\n  A --> B", el);
-
-    expect(code.classList.contains("language-mermaid")).toBe(false);
-    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
-  });
-
-  it("leaves code.language-mermaid intact on failure (native renderer can take over)", async () => {
-    renderBeautiful.mockRejectedValue(new Error("beautiful boom"));
-    const plugin = makePlugin();
-
-    const wrapper = document.createElement("div");
-    const pre = wrapper.createEl("pre");
-    const code = pre.createEl("code");
-    code.classList.add("language-mermaid");
-    const el = wrapper.createDiv();
-
-    await route(plugin, "flowchart TD\n  A --> B", el);
-
-    expect(code.classList.contains("language-mermaid")).toBe(true);
-    expect(code.classList.contains("language-mermaid-rendered")).toBe(false);
-  });
-});
-
-// --- neutralizeNativeMermaid ---------------------------------------------------
-
-describe("neutralizeNativeMermaid", () => {
-  it("renames a code.language-mermaid found inside el", () => {
-    const el = document.createElement("div");
-    const code = el.createEl("code");
-    code.classList.add("language-mermaid");
-
-    neutralizeNativeMermaid(el);
-
-    expect(code.classList.contains("language-mermaid")).toBe(false);
-    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
-  });
-
-  it("renames a code.language-mermaid found via el.parentElement", () => {
-    const parent = document.createElement("div");
-    const pre = parent.createEl("pre");
-    const code = pre.createEl("code");
-    code.classList.add("language-mermaid");
-    const el = parent.createDiv();
-
-    neutralizeNativeMermaid(el);
-
-    expect(code.classList.contains("language-mermaid")).toBe(false);
-    expect(code.classList.contains("language-mermaid-rendered")).toBe(true);
-  });
-
-  it("does nothing when no code.language-mermaid is present", () => {
-    const el = document.createElement("div");
-    expect(() => neutralizeNativeMermaid(el)).not.toThrow();
-    expect(el.querySelector("code.language-mermaid-rendered")).toBeNull();
   });
 });
 
@@ -295,7 +477,6 @@ describe("appendSvg", () => {
     const svg = host.querySelector("svg");
     expect(svg).not.toBeNull();
     expect((svg as Element).getAttribute("id")).toBe("parsed-output");
-    // The node is appended, not assigned via innerHTML string.
     expect(host.childNodes.length).toBe(1);
   });
 
@@ -321,7 +502,6 @@ describe("findMermaidFences", () => {
 
     expect(fences).toHaveLength(1);
     expect(fences[0].source).toBe("flowchart TD\n  A --> B");
-    // The range starts at the opening fence, not the preceding blank line.
     expect(doc.slice(fences[0].from, fences[0].from + 3)).toBe("```");
   });
 
@@ -354,13 +534,14 @@ describe("findMermaidFences", () => {
 // --- Live Preview widget rendering (renderWidget) ------------------------------
 
 describe("renderWidget", () => {
-  it("renders a beautiful-mermaid type synchronously into .abm-beautiful", () => {
+  it("mounts a toggleable container with a synchronous Beautiful render", () => {
     renderBeautifulSync.mockReturnValue('<svg id="lp-beautiful">x</svg>');
     const plugin = makePlugin();
 
     const host = plugin.renderWidget("flowchart TD\n  A --> B");
 
     expect(renderBeautifulSync).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".abm-block")).not.toBeNull();
     const container = host.querySelector(".abm-beautiful");
     expect(container).not.toBeNull();
     expect((container as HTMLElement).querySelector("svg")).not.toBeNull();

@@ -1,6 +1,7 @@
 import {
   editorLivePreviewField,
   MarkdownPostProcessorContext,
+  MarkdownRenderChild,
   MarkdownRenderer,
   Plugin,
 } from "obsidian";
@@ -28,16 +29,16 @@ const BEAUTIFUL_SUPPORTED = new Set<string>([
 
 /**
  * Priority for our code block processor. A smaller (more negative) value runs
- * earlier, so -200 lets us intercept and route before other plugins' processors.
+ * earlier. Obsidian registers all post-processors in one array sorted ascending
+ * by sortOrder; the native mermaid renderer is a post-processor with no sortOrder
+ * (effective 0). Because the code-block wrapper synchronously replaces the
+ * `<pre>` with our element *before* calling our handler, a sortOrder < 0
+ * deterministically removes `code.language-mermaid` from the subtree before the
+ * native post-processor (0) ever scans for it — in the first pass and in every
+ * invalidation-rebuild pass. This ordering, not any post-hoc DOM mutation, is
+ * what guarantees we are never double-rendered.
  */
 const PROCESSOR_PRIORITY = -200;
-
-/**
- * CSS class for the host element we render an unsupported diagram into when
- * delegating to Obsidian's built-in renderer. Used as a re-entry marker: see
- * `handleMermaid`.
- */
-const NATIVE_HOST_CLASS = "abm-native-host";
 
 /** CSS variables passed to beautiful-mermaid so diagrams follow the Obsidian theme. */
 const BEAUTIFUL_OPTIONS = {
@@ -46,105 +47,326 @@ const BEAUTIFUL_OPTIONS = {
   transparent: true,
 } as const;
 
+/** The four ways a single mermaid block can be displayed. */
+export type ViewMode = "beautiful" | "system" | "both" | "source";
+
+/** Mode a freshly-rendered block starts in when nothing is remembered. */
+export const DEFAULT_MODE: ViewMode = "beautiful";
+
+/** Toggle-bar order, left to right. */
+const MODE_ORDER: readonly ViewMode[] = ["beautiful", "system", "both", "source"];
+
+/** Human labels shown on the toggle buttons. */
+const MODE_LABELS: Record<ViewMode, string> = {
+  beautiful: "Beautiful",
+  system: "System",
+  both: "Both",
+  source: "Source",
+};
+
 export default class AutoBeautifulMermaidPlugin extends Plugin {
+  /**
+   * Per-block view mode, remembered for the session and keyed by fence source
+   * (see {@link modeKey}). Survives Live Preview widget rebuilds and Reading View
+   * section re-renders triggered by unrelated edits; reset to Beautiful when the
+   * note (and thus the plugin's in-memory map) is reopened.
+   */
+  private readonly modeStore = new Map<string, ViewMode>();
+
+  /**
+   * Re-entry depth for {@link renderSystemInto}. While > 0 we are inside our own
+   * `MarkdownRenderer.render` call and must NOT build another container — instead
+   * we recreate a `<pre><code class="language-mermaid">` so Obsidian's native
+   * post-processor renders genuinely-native output into the System slot.
+   */
+  private systemRenderDepth = 0;
+
   async onload(): Promise<void> {
-    // Reading View: a single processor for the `mermaid` fence language. We only
-    // take over the diagram types beautiful-mermaid supports; every other type
-    // is delegated back to Obsidian's built-in renderer (see `renderWithNative`)
-    // so its source-toggle and error UI are preserved.
+    // Reading View: one processor for the `mermaid` fence language. Supported
+    // types become an owned, toggleable container; unsupported types are restored
+    // to plain `<pre><code class="language-mermaid">` so Obsidian's native
+    // renderer handles them untouched (keeping its source toggle and error UI).
     this.registerMarkdownCodeBlockProcessor(
       "mermaid",
       (source, el, ctx) => this.handleMermaid(source, el, ctx),
       PROCESSOR_PRIORITY,
     );
 
-    // Live Preview: a CodeMirror editor extension that replaces supported
-    // mermaid fences with rendered widgets while the cursor is outside them.
+    // Live Preview: a CodeMirror extension that replaces supported mermaid fences
+    // with the same toggleable container while the cursor is outside them.
     this.registerEditorExtension(createMermaidEditorExtension(this));
   }
 
+  /** Current remembered mode for a block, or the default. */
+  getMode(source: string): ViewMode {
+    return this.modeStore.get(modeKey(source)) ?? DEFAULT_MODE;
+  }
+
+  /** Remember a block's chosen mode for the session. */
+  setMode(source: string, mode: ViewMode): void {
+    this.modeStore.set(modeKey(source), mode);
+  }
+
+  /**
+   * Reading View entry point for a `mermaid` fence.
+   *
+   * Order matters: the re-entry guard is checked first so that a System render
+   * (which re-runs the full post-processor queue over a `mermaid` fence and
+   * re-invokes this handler) does not recurse into building another container.
+   */
   private async handleMermaid(
     source: string,
     el: HTMLElement,
     ctx: MarkdownPostProcessorContext,
   ): Promise<void> {
-    // Re-entry guard: `renderWithNative` delegates to MarkdownRenderer.render,
-    // which re-runs the markdown pipeline on a ```mermaid fence and may re-invoke
-    // this very processor. When that happens our `el` lives inside the native
-    // host we created, so bail out and let the built-in renderer take over.
-    if (el.closest(`.${NATIVE_HOST_CLASS}`) !== null) return;
-
-    const diagramType = extractDiagramType(source);
-
-    if (diagramType !== null && BEAUTIFUL_SUPPORTED.has(diagramType)) {
-      await this.renderWithBeautiful(source, el);
-    } else {
-      await this.renderWithNative(source, el, ctx);
+    // We are inside our own MarkdownRenderer.render: hand the fence to the native
+    // post-processor by recreating it, then bail.
+    if (this.systemRenderDepth > 0) {
+      recreateNativeFence(el, source);
+      return;
     }
-  }
 
-  /** Render via beautiful-mermaid. On any error: show error + source, no fallback. */
-  private async renderWithBeautiful(source: string, el: HTMLElement): Promise<void> {
-    try {
-      // beautiful-mermaid maps bg/fg onto the SVG's own --bg/--fg custom
-      // properties, which resolve against the theme at paint time, so the
-      // diagram follows light/dark.
-      const svg = await renderMermaidSVGAsync(source, { ...BEAUTIFUL_OPTIONS });
-
-      const container = el.createDiv({ cls: "abm-container abm-beautiful" });
-      appendSvg(container, svg);
-
-      // Stop Obsidian's built-in mermaid PostProcessor from drawing this fence a
-      // second time. Only do this on the success path; on failure we leave the
-      // fence intact so the built-in renderer can still handle it.
-      neutralizeNativeMermaid(el);
-    } catch (error) {
-      renderError(el, "beautiful-mermaid", error, source);
+    // Unsupported types: restore the no-plugin DOM and let native render it.
+    if (!isSupportedType(source)) {
+      restoreNativeFence(el, source);
+      return;
     }
+
+    // Supported types: mount the toggleable container.
+    const child = typeof ctx.addChild === "function"
+      ? new MarkdownRenderChild(el)
+      : undefined;
+    if (child) ctx.addChild(child);
+
+    const { ready } = mountMermaidBlock({
+      host: el,
+      source,
+      getMode: () => this.getMode(source),
+      setMode: (mode) => this.setMode(source, mode),
+      renderBeautiful: (slot) => this.renderBeautifulInto(slot, source),
+      renderSystem: (slot) =>
+        this.renderSystemInto(slot, source, ctx.sourcePath ?? "", child ?? this),
+    });
+
+    await ready;
   }
 
   /**
-   * Delegate an unsupported diagram type to Obsidian's built-in mermaid
-   * renderer by re-rendering the fence through the markdown pipeline. This keeps
-   * the native source-toggle and error UI for types beautiful-mermaid can't
-   * draw. The output is wrapped in a `.abm-native-host` div that doubles as the
-   * re-entry marker checked in `handleMermaid`.
-   */
-  private async renderWithNative(
-    source: string,
-    el: HTMLElement,
-    ctx: MarkdownPostProcessorContext,
-  ): Promise<void> {
-    const host = el.createDiv({ cls: NATIVE_HOST_CLASS });
-    await MarkdownRenderer.render(
-      this.app,
-      "```mermaid\n" + source + "\n```",
-      host,
-      ctx.sourcePath ?? "",
-      this,
-    );
-  }
-
-  /**
-   * Render a single fence into a freshly-created Live Preview widget host.
+   * Render a single supported fence into a Live Preview widget host.
    *
-   * Only supported types reach this method — `createMermaidEditorExtension`
-   * filters unsupported fences out before building a widget. The beautiful-mermaid
-   * path is synchronous (`renderMermaidSVG`) because a WidgetType's `toDOM()`
-   * must return immediately.
+   * The beautiful path is synchronous here (`renderMermaidSVG`) because a
+   * WidgetType's `toDOM()` must return immediately; the System slot still renders
+   * asynchronously and fills in when ready.
    */
   renderWidget(source: string): HTMLElement {
     const host = document.createElement("div");
+    mountMermaidBlock({
+      host,
+      source,
+      getMode: () => this.getMode(source),
+      setMode: (mode) => this.setMode(source, mode),
+      renderBeautiful: (slot) => this.renderBeautifulSyncInto(slot, source),
+      renderSystem: (slot) => this.renderSystemInto(slot, source, "", this),
+    });
+    return host;
+  }
 
+  /** Beautiful render for Reading View (async). Errors render in-slot, no fallback. */
+  private async renderBeautifulInto(slot: HTMLElement, source: string): Promise<void> {
     try {
-      const svg = renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS });
-      const container = host.createDiv({ cls: "abm-container abm-beautiful" });
+      const svg = await renderMermaidSVGAsync(source, { ...BEAUTIFUL_OPTIONS });
+      const container = slot.createDiv({ cls: "abm-container abm-beautiful" });
       appendSvg(container, svg);
     } catch (error) {
-      renderError(host, "beautiful-mermaid", error, source);
+      renderError(slot, "beautiful-mermaid", error, source);
+    }
+  }
+
+  /** Beautiful render for Live Preview (synchronous). */
+  private renderBeautifulSyncInto(slot: HTMLElement, source: string): void {
+    try {
+      const svg = renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS });
+      const container = slot.createDiv({ cls: "abm-container abm-beautiful" });
+      appendSvg(container, svg);
+    } catch (error) {
+      renderError(slot, "beautiful-mermaid", error, source);
+    }
+  }
+
+  /**
+   * Produce Obsidian's genuinely-native render into a slot via
+   * `MarkdownRenderer.render`, using the {@link systemRenderDepth} re-entry guard.
+   *
+   * The post-processor loop inside `MarkdownRenderer.render` runs synchronously
+   * before the returned promise, so the guard is only raised during our own
+   * synchronous re-entry — we decrement it in `finally` immediately after the
+   * call returns (NOT after `await`) so it can never leak to another block.
+   */
+  private async renderSystemInto(
+    slot: HTMLElement,
+    source: string,
+    sourcePath: string,
+    component: MarkdownRenderChild | Plugin,
+  ): Promise<void> {
+    let promise: Promise<void>;
+    this.systemRenderDepth++;
+    try {
+      promise = MarkdownRenderer.render(
+        this.app,
+        "```mermaid\n" + source + "\n```",
+        slot,
+        sourcePath,
+        component,
+      );
+    } finally {
+      this.systemRenderDepth--;
     }
 
-    return host;
+    try {
+      await promise;
+    } catch (error) {
+      renderError(slot, "system", error, source);
+    }
+  }
+}
+
+/**
+ * Mount a toggleable mermaid block into `host`.
+ *
+ * Builds a toggle bar (Beautiful / System / Both / Source) above three view
+ * slots. The Beautiful and Source views render eagerly; the System view renders
+ * lazily on first switch to System or Both and is cached thereafter. Visibility
+ * is driven entirely by the `data-mode` attribute on the container (see
+ * styles.css) so switching modes never re-renders an already-built view.
+ *
+ * Returns the container plus a `ready` promise that resolves once the eager
+ * Beautiful render settles — Reading View awaits it so tests and downstream
+ * passes observe a populated slot; Live Preview ignores it.
+ */
+export function mountMermaidBlock(opts: MermaidBlockOptions): {
+  container: HTMLElement;
+  ready: Promise<void>;
+} {
+  const { host, source } = opts;
+
+  const container = host.createDiv({ cls: "abm-block" });
+  const bar = container.createDiv({ cls: "abm-toggle" });
+  const views = container.createDiv({ cls: "abm-views" });
+
+  // Order matters for the "Both" mode, which stacks Beautiful above System.
+  const beautifulSlot = views.createDiv({ cls: "abm-view abm-view-beautiful" });
+  const systemSlot = views.createDiv({ cls: "abm-view abm-view-system" });
+  const sourceSlot = views.createDiv({ cls: "abm-view abm-view-source" });
+
+  // Source view: NEVER carries `language-mermaid`, so a stray rebuild can never
+  // let the native post-processor render it.
+  const pre = sourceSlot.createEl("pre");
+  pre.createEl("code", { cls: "abm-source-code", text: source });
+
+  // Beautiful eagerly; capture its settling for `ready`.
+  const ready = Promise.resolve(opts.renderBeautiful(beautifulSlot)).then(() => undefined);
+
+  let systemRendered = false;
+  const ensureSystem = (): void => {
+    if (systemRendered) return;
+    systemRendered = true;
+    void Promise.resolve(opts.renderSystem(systemSlot));
+  };
+
+  const buttons = new Map<ViewMode, HTMLElement>();
+
+  const apply = (mode: ViewMode): void => {
+    if (mode === "system" || mode === "both") ensureSystem();
+    container.dataset.mode = mode;
+    for (const [candidate, button] of buttons) {
+      const active = candidate === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  };
+
+  for (const mode of MODE_ORDER) {
+    const button = bar.createEl("button", {
+      cls: "abm-toggle-btn",
+      text: MODE_LABELS[mode],
+    });
+    button.setAttribute("type", "button");
+    button.dataset.mode = mode;
+    button.addEventListener("click", () => {
+      opts.setMode(mode);
+      apply(mode);
+    });
+    buttons.set(mode, button);
+  }
+
+  apply(opts.getMode());
+
+  return { container, ready };
+}
+
+/** Options for {@link mountMermaidBlock}. */
+export interface MermaidBlockOptions {
+  /** Element to render the block into. */
+  host: HTMLElement;
+  /** The mermaid fence source (declaration + body). */
+  source: string;
+  /** Read the block's current mode. */
+  getMode: () => ViewMode;
+  /** Persist the block's chosen mode. */
+  setMode: (mode: ViewMode) => void;
+  /** Fill the Beautiful slot. Called once, eagerly. May be async. */
+  renderBeautiful: (slot: HTMLElement) => void | Promise<void>;
+  /** Fill the System slot with native output. Called lazily, once. May be async. */
+  renderSystem: (slot: HTMLElement) => void | Promise<void>;
+}
+
+/**
+ * Whether beautiful-mermaid supports this fence's diagram type.
+ *
+ * Used to decide whether to take over a block (build the container) or restore
+ * it to Obsidian's native renderer.
+ */
+export function isSupportedType(source: string): boolean {
+  const type = extractDiagramType(source);
+  return type !== null && BEAUTIFUL_SUPPORTED.has(type);
+}
+
+/** Key under which a block's mode is remembered: the trimmed fence source. */
+export function modeKey(source: string): string {
+  return source.trim();
+}
+
+/**
+ * Recreate a `<pre><code class="language-mermaid">` *inside* `host` so Obsidian's
+ * native post-processor (which scans for `code.language-mermaid` later in the
+ * same pass) renders it there. Used for the System slot during a re-entrant
+ * `MarkdownRenderer.render`.
+ */
+export function recreateNativeFence(host: HTMLElement, source: string): void {
+  const pre = host.createEl("pre");
+  pre.createEl("code", { cls: "language-mermaid", text: source });
+}
+
+/**
+ * Restore the no-plugin DOM for an unsupported diagram type: replace our wrapper
+ * element with a freshly built `<pre><code class="language-mermaid">` at the same
+ * position, so Obsidian's native renderer processes it exactly as it would
+ * without this plugin (preserving its source toggle, error fallback, and
+ * `getSectionInfo`-dependent behavior). Falls back to appending inside `el` when
+ * it has no parent (e.g. under test).
+ */
+export function restoreNativeFence(el: HTMLElement, source: string): void {
+  const doc = el.ownerDocument ?? document;
+  const pre = doc.createElement("pre");
+  const code = doc.createElement("code");
+  code.className = "language-mermaid";
+  code.textContent = source;
+  pre.appendChild(code);
+
+  if (el.parentElement) {
+    el.replaceWith(pre);
+  } else {
+    el.appendChild(pre);
   }
 }
 
@@ -181,36 +403,6 @@ export function extractDiagramType(source: string): string | null {
   }
 
   return null;
-}
-
-/**
- * Stop Obsidian's built-in mermaid PostProcessor from re-rendering a fence we
- * already drew via beautiful-mermaid.
- *
- * Obsidian registers its mermaid renderer as a *PostProcessor* (not a code-block
- * processor): it independently scans the rendered DOM for `code.language-mermaid`
- * elements and renders every match — `e.findAll('code.language-mermaid')`. That
- * runs regardless of our code-block processor's priority, so a high priority
- * alone can't prevent a double render.
- *
- * Renaming the class to `language-mermaid-rendered` makes the PostProcessor's
- * `findAll('code.language-mermaid')` miss the element, so it skips the block.
- *
- * Our `el` is the container div the code-block processor hands us; the original
- * fence lives in a sibling/ancestor `pre > code.language-mermaid`, so we search
- * outward from `el` and rename the nearest match.
- */
-export function neutralizeNativeMermaid(el: HTMLElement): void {
-  const code =
-    el.querySelector("code.language-mermaid") ??
-    el.parentElement?.querySelector("code.language-mermaid") ??
-    el.closest("pre")?.querySelector("code.language-mermaid") ??
-    null;
-
-  if (code) {
-    code.classList.remove("language-mermaid");
-    code.classList.add("language-mermaid-rendered");
-  }
 }
 
 /**
@@ -333,15 +525,15 @@ class MermaidEditorWidget extends WidgetType {
   }
 
   ignoreEvent(): boolean {
-    // Let clicks through so the user can place the cursor and reveal the source.
+    // Let clicks through so the toggle buttons work and the cursor can be placed.
     return false;
   }
 }
 
 /**
- * Build the StateField that decorates mermaid fences with rendered widgets in
- * Live Preview. A fence is left as plain source whenever a selection range
- * intersects it, so editing the block shows the underlying code.
+ * Build the StateField that decorates supported mermaid fences with rendered
+ * widgets in Live Preview. A fence is left as plain source whenever a selection
+ * range intersects it, so editing the block shows the underlying code.
  */
 export function createMermaidEditorExtension(
   plugin: AutoBeautifulMermaidPlugin,
@@ -356,8 +548,7 @@ export function createMermaidEditorExtension(
     for (const fence of findMermaidFences(docText)) {
       // Only decorate types beautiful-mermaid supports; leave the rest as plain
       // fences so Obsidian's built-in Live Preview renderer handles them.
-      const diagramType = extractDiagramType(fence.source);
-      if (diagramType === null || !BEAUTIFUL_SUPPORTED.has(diagramType)) continue;
+      if (!isSupportedType(fence.source)) continue;
 
       if (selectionIntersects(state, fence.from, fence.to)) continue;
 

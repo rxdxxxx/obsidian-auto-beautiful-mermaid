@@ -1,4 +1,84 @@
-/* Auto Beautiful Mermaid — container & error styling */
+/* Auto Beautiful Mermaid — block container, toggle bar, views & error styling */
+
+/* ---- Block container & toggle bar -------------------------------------- */
+
+.abm-block {
+  margin: 0.5em 0;
+}
+
+.abm-toggle {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 0.5em;
+  padding: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 6px);
+  background-color: var(--background-secondary);
+  width: fit-content;
+}
+
+.abm-toggle-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-smaller, 0.85em);
+  line-height: 1.4;
+  padding: 2px 10px;
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.abm-toggle-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.abm-toggle-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.abm-toggle-btn.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* ---- Views: visibility driven entirely by the container's data-mode ----- */
+
+.abm-view {
+  display: none;
+}
+
+.abm-block[data-mode="beautiful"] .abm-view-beautiful {
+  display: block;
+}
+
+.abm-block[data-mode="system"] .abm-view-system {
+  display: block;
+}
+
+/* "Both" stacks Beautiful above System (DOM order). */
+.abm-block[data-mode="both"] .abm-view-beautiful,
+.abm-block[data-mode="both"] .abm-view-system {
+  display: block;
+}
+
+.abm-block[data-mode="both"] .abm-view-beautiful {
+  margin-bottom: 0.5em;
+}
+
+.abm-block[data-mode="source"] .abm-view-source {
+  display: block;
+}
+
+.abm-view-source pre {
+  margin: 0;
+  overflow-x: auto;
+}
+
+/* ---- beautiful-mermaid output ------------------------------------------ */
 
 .abm-container {
   display: flex;
@@ -11,14 +91,15 @@
   height: auto;
 }
 
-/* beautiful-mermaid output: bind its CSS variables to Obsidian theme vars so
-   the diagram follows the active theme automatically. */
+/* Bind beautiful-mermaid CSS variables to Obsidian theme vars so the diagram
+   follows the active theme automatically. */
 .abm-beautiful {
   --bg: var(--background-primary);
   --fg: var(--text-normal);
 }
 
-/* Error rendering — no fallback to the other engine, show message + source. */
+/* ---- Error rendering — show message + source, no engine fallback ------- */
+
 .abm-error {
   border: 1px solid var(--background-modifier-error, #e93147);
   border-radius: var(--radius-s, 4px);
