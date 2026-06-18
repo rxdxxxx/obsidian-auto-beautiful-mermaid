@@ -1,11 +1,9 @@
 import {
   editorLivePreviewField,
+  loadMermaid,
   MarkdownPostProcessorContext,
-  MarkdownRenderChild,
-  MarkdownRenderer,
   Plugin,
 } from "obsidian";
-import type { Component } from "obsidian";
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
@@ -78,13 +76,11 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
    */
   private readonly modeStore = new Map<string, ViewMode>();
 
-  /**
-   * Re-entry depth for {@link renderSystemInto}. While > 0 we are inside our own
-   * `MarkdownRenderer.render` call and must NOT build another container — instead
-   * we recreate a `<pre><code class="language-mermaid">` so Obsidian's native
-   * post-processor renders genuinely-native output into the System slot.
-   */
-  private systemRenderDepth = 0;
+  /** Obsidian's built-in mermaid engine, loaded once via {@link loadMermaid}. */
+  private mermaidInstance?: Promise<MermaidEngine>;
+
+  /** Monotonic source of unique ids for `mermaid.render` (transient DOM ids). */
+  private systemIdCounter = 0;
 
   async onload(): Promise<void> {
     // Reading View: one processor for the `mermaid` fence language. We take over
@@ -121,31 +117,17 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
   }
 
   /**
-   * Reading View entry point for a `mermaid` fence.
+   * Reading View entry point for a `mermaid` fence. Every block is owned: mount
+   * the toggleable container. The type only selects the default mode and buttons.
    *
-   * Order matters: the re-entry guard is checked first so that a System render
-   * (which re-runs the full post-processor queue over a `mermaid` fence and
-   * re-invokes this handler) does not recurse into building another container.
+   * No re-entry guard is needed: neither renderer goes through Obsidian's markdown
+   * pipeline, so this handler is never re-invoked recursively.
    */
   private async handleMermaid(
     source: string,
     el: HTMLElement,
-    ctx: MarkdownPostProcessorContext,
+    _ctx: MarkdownPostProcessorContext,
   ): Promise<void> {
-    // We are inside our own MarkdownRenderer.render: hand the fence to the native
-    // post-processor by recreating it, then bail.
-    if (this.systemRenderDepth > 0) {
-      recreateNativeFence(el, source);
-      return;
-    }
-
-    // Every other mermaid block (supported AND unsupported) is owned: mount the
-    // toggleable container. The type only selects the default mode and buttons.
-    const child = typeof ctx.addChild === "function"
-      ? new MarkdownRenderChild(el)
-      : undefined;
-    if (child) ctx.addChild(child);
-
     const { ready } = mountMermaidBlock({
       host: el,
       source,
@@ -153,30 +135,21 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
       getMode: () => this.getMode(source),
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulInto(slot, source),
-      renderSystem: (slot) =>
-        this.renderSystemInto(slot, source, ctx.sourcePath ?? "", child ?? this),
+      renderSystem: (slot) => this.renderSystemInto(slot, source),
     });
 
     await ready;
   }
 
   /**
-   * Render a single supported fence into a Live Preview widget host.
+   * Render a single fence into a Live Preview widget host.
    *
    * The beautiful path is synchronous here (`renderMermaidSVG`) because a
    * WidgetType's `toDOM()` must return immediately; the System slot still renders
-   * asynchronously and fills in when ready.
-   *
-   * Returns a `MarkdownRenderChild` bound to the host as the System render's
-   * lifecycle component — loaded here and unloaded by the widget's `destroy()`,
-   * so native render children are torn down when CodeMirror rebuilds the widget
-   * (rather than leaking under the plugin until it unloads).
+   * asynchronously (via {@link loadMermaid}) and fills in when ready.
    */
-  renderWidget(source: string): { host: HTMLElement; child: MarkdownRenderChild } {
+  renderWidget(source: string): HTMLElement {
     const host = document.createElement("div");
-    const child = new MarkdownRenderChild(host);
-    child.load();
-
     mountMermaidBlock({
       host,
       source,
@@ -184,10 +157,9 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
       getMode: () => this.getMode(source),
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulSyncInto(slot, source),
-      renderSystem: (slot) => this.renderSystemInto(slot, source, "", child),
+      renderSystem: (slot) => this.renderSystemInto(slot, source),
     });
-
-    return { host, child };
+    return host;
   }
 
   /** Beautiful render for Reading View (async). Errors render in-slot, no fallback. */
@@ -209,47 +181,47 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
   }
 
   /**
-   * Produce Obsidian's genuinely-native render into a slot via
-   * `MarkdownRenderer.render`, using the {@link systemRenderDepth} re-entry guard.
-   *
-   * The post-processor loop inside `MarkdownRenderer.render` runs synchronously
-   * before the returned promise, so the guard is only raised during our own
-   * synchronous re-entry — we decrement it in `finally` immediately after the
-   * call returns (NOT after `await`) so it can never leak to another block.
-   *
-   * Both a synchronous throw from `render` (a PP in the queue throwing during the
-   * synchronous pass) and an async rejection are funnelled into an in-slot error
-   * box, so neither escapes as an unhandled rejection.
+   * Load Obsidian's built-in mermaid engine once and cache the promise. If the
+   * load rejects we clear the cache so a later render retries — caching a rejected
+   * promise would otherwise poison every future System render for the session.
    */
-  private async renderSystemInto(
-    slot: HTMLElement,
-    source: string,
-    sourcePath: string,
-    component: Component,
-  ): Promise<void> {
-    let promise: Promise<void> | undefined;
-    this.systemRenderDepth++;
-    try {
-      promise = MarkdownRenderer.render(
-        this.app,
-        "```mermaid\n" + source + "\n```",
-        slot,
-        sourcePath,
-        component,
+  private loadMermaidEngine(): Promise<MermaidEngine> {
+    if (!this.mermaidInstance) {
+      this.mermaidInstance = Promise.resolve(loadMermaid()).then(
+        (engine) => engine as MermaidEngine,
+        (error) => {
+          this.mermaidInstance = undefined;
+          throw error;
+        },
       );
-    } catch (error) {
-      renderError(slot, "system", error, source);
-    } finally {
-      this.systemRenderDepth--;
     }
+    return this.mermaidInstance;
+  }
 
-    if (!promise) return;
+  /**
+   * Render the System view with Obsidian's own mermaid engine and inject the SVG
+   * directly. Crucially this never emits a `code.language-mermaid` node, so
+   * Obsidian's section-level mermaid PostProcessor has nothing to scan and cannot
+   * draw a second diagram (the no-double-render invariant). On failure (e.g. a
+   * syntax error) show our error box, like the Beautiful path.
+   */
+  private async renderSystemInto(slot: HTMLElement, source: string): Promise<void> {
     try {
-      await promise;
+      const mermaid = await this.loadMermaidEngine();
+      const id = `abm-sys-${this.systemIdCounter++}`;
+      const result = await mermaid.render(id, source);
+      const svg = typeof result === "string" ? result : result?.svg;
+      if (!svg) throw new Error("mermaid.render returned no SVG");
+      appendSvg(slot, svg);
     } catch (error) {
       renderError(slot, "system", error, source);
     }
   }
+}
+
+/** The subset of Obsidian's built-in mermaid engine we use. */
+interface MermaidEngine {
+  render(id: string, source: string): Promise<{ svg?: string } | string>;
 }
 
 /**
@@ -405,26 +377,6 @@ export function appendBeautiful(slot: HTMLElement, svg: string): void {
 }
 
 /**
- * Recreate a `<pre><code class="language-mermaid">` *inside* `host` so Obsidian's
- * native post-processor (which scans for `code.language-mermaid` later in the
- * same pass) renders it there. Used for the System slot during a re-entrant
- * `MarkdownRenderer.render` — this is how the System view obtains genuinely
- * native output (and native error UI for diagrams mermaid rejects).
- *
- * The `language-mermaid` class is the load-bearing contract with the native
- * post-processor, so it lives only here.
- */
-export function recreateNativeFence(host: HTMLElement, source: string): void {
-  const doc = host.ownerDocument ?? document;
-  const pre = doc.createElement("pre");
-  const code = doc.createElement("code");
-  code.className = "language-mermaid";
-  code.textContent = source;
-  pre.appendChild(code);
-  host.appendChild(pre);
-}
-
-/**
  * Extract the diagram-type keyword from a mermaid code block.
  *
  * Skips YAML frontmatter (`---` … `---`), directive lines (`%%{...}%%` / `%%`),
@@ -563,9 +515,6 @@ export function selectionIntersects(state: EditorState, from: number, to: number
 
 /** WidgetType that renders a mermaid fence inside the Live Preview editor. */
 class MermaidEditorWidget extends WidgetType {
-  /** Lifecycle component for this widget's System render; unloaded on destroy. */
-  private child: MarkdownRenderChild | null = null;
-
   constructor(
     private readonly plugin: AutoBeautifulMermaidPlugin,
     private readonly source: string,
@@ -578,16 +527,7 @@ class MermaidEditorWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const { host, child } = this.plugin.renderWidget(this.source);
-    this.child = child;
-    return host;
-  }
-
-  destroy(): void {
-    // Tear down the System render's native children when CodeMirror replaces or
-    // removes this widget, instead of leaking them under the plugin lifecycle.
-    this.child?.unload();
-    this.child = null;
+    return this.plugin.renderWidget(this.source);
   }
 
   ignoreEvent(): boolean {
