@@ -1,0 +1,42 @@
+schema: spec-driven
+
+context: |
+  Project: auto-beautiful-mermaid — an Obsidian plugin (id `auto-beautiful-mermaid`).
+  Tech stack: TypeScript, esbuild bundle to main.js, vitest unit tests (jsdom),
+  CodeMirror 6 for Live Preview, beautiful-mermaid npm package for rendering.
+  Entry point: src/main.ts. Tests in src/main.test.ts with an obsidian mock in
+  test/mocks/obsidian.ts (tests call render methods directly, not via Obsidian).
+
+  Scope: the plugin only takes over the diagram types beautiful-mermaid supports
+  (BEAUTIFUL_SUPPORTED: graph/flowchart, stateDiagram(-v2), sequenceDiagram,
+  classDiagram, erDiagram, xychart(-beta)). Every other mermaid type is left
+  entirely to Obsidian's native renderer, untouched.
+
+  Verified Obsidian internals (reverse-engineered from app.js, authoritative):
+  - The native mermaid renderer is a single PostProcessor registered with no
+    sortOrder (effective order 0): `findAll("code.language-mermaid")` then
+    replaces each code node's parent <pre> with a rendered `div.mermaid`.
+  - `registerMarkdownCodeBlockProcessor(lang, handler, sortOrder)` wraps the
+    handler as a PostProcessor in the SAME sorted array (ascending sortOrder).
+    The wrapper SYNCHRONOUSLY does `pre.replaceWith(div)` BEFORE calling the
+    handler. So a code-block processor at sortOrder < 0 deterministically removes
+    `code.language-mermaid` before the native PP (order 0) scans for it.
+  - `MarkdownRenderer.render(app, md, el, sourcePath, component)` runs the FULL
+    PostProcessor queue over a ```mermaid fence, so it is intercepted by our own
+    code-block processor before native — naive delegation recurses.
+  - Obsidian's mermaid engine is a bundled module-local, NOT exposed as
+    window.mermaid; plugins cannot call it directly.
+  - Live Preview renders mermaid via a CodeMirror widget that hard-codes the
+    built-in engine and never calls plugin code-block processors; our registered
+    EditorExtension StateField fully controls supported fences there.
+
+  Conventions: dense JSDoc on exported functions matching existing src/main.ts
+  style; pure helpers exported for unit testing; theme via Obsidian CSS variables
+  (--background-primary / --text-normal); no console noise.
+
+rules:
+  proposal:
+    - Keep it focused on this single feature; no unrelated refactors.
+  design:
+    - State the no-double-render invariant explicitly and how it is verified.
+    - Cite the verified Obsidian internals above when justifying mechanisms.
