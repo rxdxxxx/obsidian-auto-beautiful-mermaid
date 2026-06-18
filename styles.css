@@ -1,0 +1,49 @@
+/* Auto Beautiful Mermaid — container & error styling */
+
+.abm-container {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.abm-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* beautiful-mermaid output: bind its CSS variables to Obsidian theme vars so
+   the diagram follows the active theme automatically. */
+.abm-beautiful {
+  --bg: var(--background-primary);
+  --fg: var(--text-normal);
+}
+
+/* Error rendering — no fallback to the other engine, show message + source. */
+.abm-error {
+  border: 1px solid var(--background-modifier-error, #e93147);
+  border-radius: var(--radius-s, 4px);
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  overflow-x: auto;
+}
+
+.abm-error-title {
+  color: var(--text-error, #e93147);
+  font-weight: var(--font-bold, 600);
+  margin-bottom: 0.4em;
+}
+
+.abm-error-message {
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller, 0.85em);
+  margin-bottom: 0.6em;
+  color: var(--text-muted);
+}
+
+.abm-error pre {
+  margin: 0;
+  white-space: pre;
+}

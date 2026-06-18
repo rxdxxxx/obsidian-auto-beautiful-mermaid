@@ -1,0 +1,9 @@
+{
+  "id": "auto-beautiful-mermaid",
+  "name": "Auto Beautiful Mermaid",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Smart-routes Mermaid code blocks: beautiful-mermaid renders its 6 supported diagram types, official mermaid.js renders everything else.",
+  "author": "",
+  "isDesktopOnly": false
+}
