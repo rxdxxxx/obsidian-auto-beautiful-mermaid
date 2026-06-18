@@ -45,9 +45,20 @@ export type MarkdownPostProcessorContext = Record<string, unknown>;
  */
 export class MarkdownRenderChild {
   containerEl: HTMLElement;
+  loaded = false;
 
   constructor(containerEl: HTMLElement) {
     this.containerEl = containerEl;
+  }
+
+  load(): void {
+    this.loaded = true;
+    this.onload();
+  }
+
+  unload(): void {
+    this.loaded = false;
+    this.onunload();
   }
 
   onload(): void {

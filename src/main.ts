@@ -5,6 +5,7 @@ import {
   MarkdownRenderer,
   Plugin,
 } from "obsidian";
+import type { Component } from "obsidian";
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
@@ -70,6 +71,10 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
    * (see {@link modeKey}). Survives Live Preview widget rebuilds and Reading View
    * section re-renders triggered by unrelated edits; reset to Beautiful when the
    * note (and thus the plugin's in-memory map) is reopened.
+   *
+   * Keying by source means two blocks with byte-identical source in the same note
+   * share one entry, so they toggle together — an accepted, rare trade-off (no
+   * positional id is available across both render surfaces). See design D5.
    */
   private readonly modeStore = new Map<string, ViewMode>();
 
@@ -157,26 +162,33 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
    * The beautiful path is synchronous here (`renderMermaidSVG`) because a
    * WidgetType's `toDOM()` must return immediately; the System slot still renders
    * asynchronously and fills in when ready.
+   *
+   * Returns a `MarkdownRenderChild` bound to the host as the System render's
+   * lifecycle component — loaded here and unloaded by the widget's `destroy()`,
+   * so native render children are torn down when CodeMirror rebuilds the widget
+   * (rather than leaking under the plugin until it unloads).
    */
-  renderWidget(source: string): HTMLElement {
+  renderWidget(source: string): { host: HTMLElement; child: MarkdownRenderChild } {
     const host = document.createElement("div");
+    const child = new MarkdownRenderChild(host);
+    child.load();
+
     mountMermaidBlock({
       host,
       source,
       getMode: () => this.getMode(source),
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulSyncInto(slot, source),
-      renderSystem: (slot) => this.renderSystemInto(slot, source, "", this),
+      renderSystem: (slot) => this.renderSystemInto(slot, source, "", child),
     });
-    return host;
+
+    return { host, child };
   }
 
   /** Beautiful render for Reading View (async). Errors render in-slot, no fallback. */
   private async renderBeautifulInto(slot: HTMLElement, source: string): Promise<void> {
     try {
-      const svg = await renderMermaidSVGAsync(source, { ...BEAUTIFUL_OPTIONS });
-      const container = slot.createDiv({ cls: "abm-container abm-beautiful" });
-      appendSvg(container, svg);
+      appendBeautiful(slot, await renderMermaidSVGAsync(source, { ...BEAUTIFUL_OPTIONS }));
     } catch (error) {
       renderError(slot, "beautiful-mermaid", error, source);
     }
@@ -185,9 +197,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
   /** Beautiful render for Live Preview (synchronous). */
   private renderBeautifulSyncInto(slot: HTMLElement, source: string): void {
     try {
-      const svg = renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS });
-      const container = slot.createDiv({ cls: "abm-container abm-beautiful" });
-      appendSvg(container, svg);
+      appendBeautiful(slot, renderMermaidSVG(source, { ...BEAUTIFUL_OPTIONS }));
     } catch (error) {
       renderError(slot, "beautiful-mermaid", error, source);
     }
@@ -206,7 +216,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     slot: HTMLElement,
     source: string,
     sourcePath: string,
-    component: MarkdownRenderChild | Plugin,
+    component: Component,
   ): Promise<void> {
     let promise: Promise<void>;
     this.systemRenderDepth++;
@@ -263,14 +273,16 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
   const pre = sourceSlot.createEl("pre");
   pre.createEl("code", { cls: "abm-source-code", text: source });
 
-  // Beautiful eagerly; capture its settling for `ready`.
-  const ready = Promise.resolve(opts.renderBeautiful(beautifulSlot)).then(() => undefined);
+  // Beautiful eagerly; `ready` settles when it does. Never rejects — render
+  // implementations surface their own failures into the slot (see renderError),
+  // so a bare `await ready` in callers cannot raise an unhandled rejection.
+  const ready = Promise.resolve(opts.renderBeautiful(beautifulSlot)).catch(() => undefined);
 
   let systemRendered = false;
   const ensureSystem = (): void => {
     if (systemRendered) return;
     systemRendered = true;
-    void Promise.resolve(opts.renderSystem(systemSlot));
+    void opts.renderSystem(systemSlot);
   };
 
   const buttons = new Map<ViewMode, HTMLElement>();
@@ -336,6 +348,29 @@ export function modeKey(source: string): string {
   return source.trim();
 }
 
+/** Render an SVG string into a freshly-created `.abm-beautiful` container in `slot`. */
+export function appendBeautiful(slot: HTMLElement, svg: string): void {
+  const container = slot.createDiv({ cls: "abm-container abm-beautiful" });
+  appendSvg(container, svg);
+}
+
+/**
+ * Build a detached `<pre><code class="language-mermaid">{source}</code></pre>`.
+ *
+ * The `language-mermaid` class is the load-bearing contract with Obsidian's
+ * native post-processor (it scans for `code.language-mermaid`), so it lives in
+ * exactly one place — both {@link recreateNativeFence} and
+ * {@link restoreNativeFence} build their fence here.
+ */
+function buildMermaidFence(doc: Document, source: string): HTMLPreElement {
+  const pre = doc.createElement("pre");
+  const code = doc.createElement("code");
+  code.className = "language-mermaid";
+  code.textContent = source;
+  pre.appendChild(code);
+  return pre;
+}
+
 /**
  * Recreate a `<pre><code class="language-mermaid">` *inside* `host` so Obsidian's
  * native post-processor (which scans for `code.language-mermaid` later in the
@@ -343,8 +378,7 @@ export function modeKey(source: string): string {
  * `MarkdownRenderer.render`.
  */
 export function recreateNativeFence(host: HTMLElement, source: string): void {
-  const pre = host.createEl("pre");
-  pre.createEl("code", { cls: "language-mermaid", text: source });
+  host.appendChild(buildMermaidFence(host.ownerDocument ?? document, source));
 }
 
 /**
@@ -356,12 +390,7 @@ export function recreateNativeFence(host: HTMLElement, source: string): void {
  * it has no parent (e.g. under test).
  */
 export function restoreNativeFence(el: HTMLElement, source: string): void {
-  const doc = el.ownerDocument ?? document;
-  const pre = doc.createElement("pre");
-  const code = doc.createElement("code");
-  code.className = "language-mermaid";
-  code.textContent = source;
-  pre.appendChild(code);
+  const pre = buildMermaidFence(el.ownerDocument ?? document, source);
 
   if (el.parentElement) {
     el.replaceWith(pre);
@@ -509,6 +538,9 @@ export function selectionIntersects(state: EditorState, from: number, to: number
 
 /** WidgetType that renders a mermaid fence inside the Live Preview editor. */
 class MermaidEditorWidget extends WidgetType {
+  /** Lifecycle component for this widget's System render; unloaded on destroy. */
+  private child: MarkdownRenderChild | null = null;
+
   constructor(
     private readonly plugin: AutoBeautifulMermaidPlugin,
     private readonly source: string,
@@ -521,7 +553,16 @@ class MermaidEditorWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    return this.plugin.renderWidget(this.source);
+    const { host, child } = this.plugin.renderWidget(this.source);
+    this.child = child;
+    return host;
+  }
+
+  destroy(): void {
+    // Tear down the System render's native children when CodeMirror replaces or
+    // removes this widget, instead of leaking them under the plugin lifecycle.
+    this.child?.unload();
+    this.child = null;
   }
 
   ignoreEvent(): boolean {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
-import { MarkdownRenderer } from "obsidian";
+import { MarkdownRenderChild, MarkdownRenderer } from "obsidian";
 
 import AutoBeautifulMermaidPlugin, {
   appendSvg,
@@ -538,7 +538,7 @@ describe("renderWidget", () => {
     renderBeautifulSync.mockReturnValue('<svg id="lp-beautiful">x</svg>');
     const plugin = makePlugin();
 
-    const host = plugin.renderWidget("flowchart TD\n  A --> B");
+    const { host } = plugin.renderWidget("flowchart TD\n  A --> B");
 
     expect(renderBeautifulSync).toHaveBeenCalledTimes(1);
     expect(host.querySelector(".abm-block")).not.toBeNull();
@@ -554,11 +554,39 @@ describe("renderWidget", () => {
     });
     const plugin = makePlugin();
 
-    const host = plugin.renderWidget("flowchart TD\n  A --> B");
+    const { host } = plugin.renderWidget("flowchart TD\n  A --> B");
 
     const errorBox = host.querySelector(".abm-error");
     expect(errorBox).not.toBeNull();
     expect((errorBox as HTMLElement).textContent).toContain("beautiful-mermaid");
     expect((errorBox as HTMLElement).textContent).toContain("sync boom");
+  });
+
+  it("returns a loaded render child whose containerEl is the host (System lifecycle)", () => {
+    renderBeautifulSync.mockReturnValue("<svg>x</svg>");
+    const plugin = makePlugin();
+
+    const { host, child } = plugin.renderWidget("flowchart TD\n  A --> B");
+
+    expect(child).toBeInstanceOf(MarkdownRenderChild);
+    expect(child.containerEl).toBe(host);
+    expect((child as unknown as { loaded: boolean }).loaded).toBe(true);
+  });
+
+  it("renders the System view under the widget's child component, not the plugin", async () => {
+    renderBeautifulSync.mockReturnValue("<svg>x</svg>");
+    const plugin = makePlugin();
+
+    const { host, child } = plugin.renderWidget("flowchart TD\n  A --> B");
+    (host.querySelector('button[data-mode="system"]') as HTMLElement).click();
+    await Promise.resolve();
+
+    expect(markdownRender).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("flowchart TD\n  A --> B"),
+      expect.any(HTMLElement),
+      "",
+      child,
+    );
   });
 });
