@@ -153,5 +153,5 @@
    when our widget is already present. Since we own every mermaid fence, the
    native render is always redundant — hide it globally. */
 .cm-preview-code-block.cm-lang-mermaid {
-  display: none;
+  display: none !important;
 }
