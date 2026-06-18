@@ -146,3 +146,12 @@
   margin: 0;
   white-space: pre;
 }
+
+/* ---- Live Preview: hide the native mermaid widget ------------------------ */
+
+/* Obsidian renders its own mermaid widget inside cm-preview-code-block even
+   when our widget is already present. Since we own every mermaid fence, the
+   native render is always redundant — hide it globally. */
+.cm-preview-code-block.cm-lang-mermaid {
+  display: none;
+}
