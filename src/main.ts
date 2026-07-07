@@ -149,7 +149,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
    * asynchronously (via {@link loadMermaid}) and fills in when ready.
    */
   renderWidget(source: string): HTMLElement {
-    const host = document.createElement("div");
+    const host = activeDocument.createElement("div");
     mountMermaidBlock({
       host,
       source,
@@ -437,7 +437,7 @@ export function appendSvg(host: HTMLElement, svg: string): void {
     throw new Error("Mermaid renderer returned invalid SVG");
   }
 
-  const doc = host.ownerDocument ?? document;
+  const doc = host.ownerDocument ?? activeDocument;
   host.appendChild(doc.importNode(svgElement, true));
 }
 
