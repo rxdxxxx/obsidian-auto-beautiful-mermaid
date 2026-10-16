@@ -63,6 +63,26 @@
   color: var(--text-on-accent);
 }
 
+/* Open-in-new-window: an icon button after the mode buttons, behind a thin
+   divider. Hidden in Source mode — there is no rendered diagram to open. */
+.abm-toolbar-sep {
+  width: 1px;
+  margin: 2px;
+  background-color: var(--background-modifier-border);
+}
+
+.abm-toolbar-open {
+  display: flex;
+  align-items: center;
+  padding: 2px 6px;
+  --icon-size: var(--icon-xs, 14px);
+}
+
+.abm-block[data-mode="source"] .abm-toolbar-sep,
+.abm-block[data-mode="source"] .abm-toolbar-open {
+  display: none;
+}
+
 /* ---- Views: visibility driven entirely by the container's data-mode ----- */
 
 .abm-view {
@@ -154,4 +174,101 @@
    native render is always redundant — hide it globally. */
 .markdown-source-view.mod-cm6 .cm-preview-code-block.cm-lang-mermaid {
   display: none;
+}
+
+/* ---- Pop-out viewer: pan & zoom pane (src/diagram-view.ts) --------------- */
+
+.workspace-leaf-content[data-type="abm-diagram"] .view-content {
+  padding: 0;
+  overflow: hidden;
+}
+
+.abm-diagram-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  /* The viewer handles pinch/drag itself; stop the browser scrolling/zooming. */
+  touch-action: none;
+  user-select: none;
+}
+
+.abm-diagram-viewport.is-panning {
+  cursor: grabbing;
+}
+
+/* Laid out at natural size, then moved by the transform src/panzoom.ts writes
+   into the --abm-pz-* custom properties. */
+.abm-diagram-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  transform-origin: 0 0;
+  transform: translate(var(--abm-pz-x, 0), var(--abm-pz-y, 0)) scale(var(--abm-pz-k, 1));
+}
+
+.abm-diagram-stage .abm-container {
+  overflow: visible;
+}
+
+/* Mermaid sets an inline max-width; the viewer sizes the SVG to its viewBox. */
+.abm-diagram-stage svg {
+  display: block;
+  max-width: none !important;
+}
+
+.abm-pz-controls {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 6px);
+  background-color: var(--background-secondary);
+  cursor: default;
+}
+
+.abm-pz-btn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-smaller, 0.85em);
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+  box-shadow: none;
+  --icon-size: var(--icon-xs, 14px);
+}
+
+.abm-pz-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.abm-pz-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.abm-pz-scale {
+  min-width: 3.5em;
+  text-align: center;
+  font-size: var(--font-smaller, 0.85em);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.abm-diagram-empty {
+  padding: 2em;
+  text-align: center;
+  color: var(--text-muted);
 }

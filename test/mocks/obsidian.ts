@@ -33,6 +33,55 @@ export class Plugin {
     // no-op
     return _command;
   }
+
+  registerView(_type: string, _factory: (leaf: unknown) => unknown): void {
+    // no-op
+  }
+}
+
+/**
+ * Mock of Obsidian's `Platform`. Tests flip `isDesktopApp` to exercise the
+ * pop-out (desktop) versus tab (mobile) branch; reset it in `afterEach`.
+ */
+export const Platform = { isDesktopApp: true, isMobile: false };
+
+/** Mock of `setIcon`: records the icon id so tests can assert which was set. */
+export function setIcon(parent: HTMLElement, iconId: string): void {
+  parent.dataset.icon = iconId;
+}
+
+/** Type-only exports used by src/diagram-view.ts; erased at runtime. */
+export type ViewStateResult = Record<string, unknown>;
+export type WorkspaceLeaf = Record<string, unknown>;
+
+/**
+ * Minimal `ItemView`: Obsidian builds `containerEl` with a `contentEl` child
+ * before calling `onOpen`. Lifecycle hooks are no-ops; tests call them directly.
+ */
+export class ItemView {
+  app: unknown;
+  leaf: unknown;
+  containerEl: HTMLElement;
+  contentEl: HTMLElement;
+
+  constructor(leaf: unknown) {
+    this.leaf = leaf;
+    this.containerEl = document.createElement("div");
+    this.contentEl = document.createElement("div");
+    this.containerEl.appendChild(this.contentEl);
+  }
+
+  getState(): Record<string, unknown> {
+    return {};
+  }
+
+  async setState(_state: unknown, _result: ViewStateResult): Promise<void> {
+    // no-op
+  }
+
+  onResize(): void {
+    // no-op
+  }
 }
 
 /** Type-only export used by src/main.ts; erased at runtime. */

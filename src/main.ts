@@ -2,11 +2,15 @@ import {
   editorLivePreviewField,
   loadMermaid,
   MarkdownPostProcessorContext,
+  Platform,
   Plugin,
+  setIcon,
 } from "obsidian";
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import { EditorState, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+
+import { DIAGRAM_VIEW_TYPE, DiagramView, type DiagramRenderer } from "./diagram-view";
 
 /**
  * Diagram type keywords that beautiful-mermaid fully supports.
@@ -97,6 +101,37 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
     // Live Preview: a CodeMirror extension that replaces every mermaid fence with
     // the same toggleable container while the cursor is outside it.
     this.registerEditorExtension(createMermaidEditorExtension(this));
+
+    // Pop-out viewer opened from a block's toolbar (see openDiagram).
+    this.registerView(
+      DIAGRAM_VIEW_TYPE,
+      (leaf) =>
+        new DiagramView(leaf, (slot, source, renderer) =>
+          this.renderDiagramInto(slot, source, renderer),
+        ),
+    );
+  }
+
+  /**
+   * Open a snapshot of a block in the pan/zoom viewer: a pop-out window on
+   * desktop, a new tab on mobile (which has no pop-out windows). The pane keeps
+   * only the source and renderer, and renders the diagram itself.
+   */
+  async openDiagram(source: string, renderer: DiagramRenderer): Promise<void> {
+    const { workspace } = this.app;
+    const leaf = Platform.isDesktopApp ? workspace.openPopoutLeaf() : workspace.getLeaf("tab");
+    await leaf.setViewState({
+      type: DIAGRAM_VIEW_TYPE,
+      active: true,
+      state: { source, renderer },
+    });
+  }
+
+  /** Render `source` with the chosen engine into `slot` (used by the viewer pane). */
+  renderDiagramInto(slot: HTMLElement, source: string, renderer: DiagramRenderer): Promise<void> {
+    return renderer === "beautiful"
+      ? this.renderBeautifulInto(slot, source)
+      : this.renderSystemInto(slot, source);
   }
 
   /**
@@ -136,6 +171,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulInto(slot, source),
       renderSystem: (slot) => this.renderSystemInto(slot, source),
+      openDiagram: (renderer) => void this.openDiagram(source, renderer),
     });
 
     await ready;
@@ -163,6 +199,7 @@ export default class AutoBeautifulMermaidPlugin extends Plugin {
       setMode: (mode) => this.setMode(source, mode),
       renderBeautiful: (slot) => this.renderBeautifulSyncInto(slot, source),
       renderSystem: (slot) => this.renderSystemInto(slot, source),
+      openDiagram: (renderer) => void this.openDiagram(source, renderer),
     });
     return host;
   }
@@ -330,6 +367,24 @@ export function mountMermaidBlock(opts: MermaidBlockOptions): {
     buttons.set(mode, button);
   }
 
+  // Open-in-new-window: a snapshot of the render currently on screen (Beautiful
+  // for Beautiful/Both, System for System). Hidden in Source mode by styles.css.
+  if (opts.openDiagram) {
+    const openDiagram = opts.openDiagram;
+    bar.createDiv({ cls: "abm-toolbar-sep" });
+    const button = bar.createEl("button", { cls: "abm-toolbar-btn abm-toolbar-open" });
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-label", "Open in new window");
+    setIcon(button, "maximize-2");
+    // Same reason as the mode buttons: keep the CodeMirror cursor out of the fence.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      const mode = container.dataset.mode;
+      if (mode === "beautiful" || mode === "both") openDiagram("beautiful");
+      else if (mode === "system") openDiagram("system");
+    });
+  }
+
   apply(opts.getMode());
 
   return { container, ready };
@@ -351,6 +406,8 @@ export interface MermaidBlockOptions {
   renderBeautiful: (slot: HTMLElement) => void | Promise<void>;
   /** Fill the System slot with native output. Called lazily, once. May be async. */
   renderSystem: (slot: HTMLElement) => void | Promise<void>;
+  /** Open the shown render in the pop-out viewer. When omitted, no button is shown. */
+  openDiagram?: (renderer: DiagramRenderer) => void;
 }
 
 /**
