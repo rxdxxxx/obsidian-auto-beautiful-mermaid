@@ -22,6 +22,7 @@ metadata:
 | #001 | 实时预览点工具栏没反应 / 模式弹回 / 切换后看不到渲染 | [references/001-live-preview-toggle-click-destroyed.md](references/001-live-preview-toggle-click-destroyed.md) |
 | #002 | 错误框 "system failed to render" + "Mermaid renderer returned invalid SVG";多行 label(`<br/>`)的图 | [references/002-system-render-invalid-svg.md](references/002-system-render-invalid-svg.md) |
 | #003 | 官方市场 bot lint 警告(prefer-create-el);接 lint 时的语义陷阱 | [references/003-lint-prefer-create-el-traps.md](references/003-lint-prefer-create-el-traps.md) |
+| #004 | 弹出窗口里缩放按钮点不动 / 连点重置为适应大小;任何"弹出窗口里坏、主窗口正常" | [references/004-popout-zoom-controls-cross-realm.md](references/004-popout-zoom-controls-cross-realm.md) |
 
 **表象未命中任何档案** → 走下方"排查通用流程"。
 
@@ -42,4 +43,5 @@ metadata:
    - SVG 注入必须容忍 mermaid 的 HTML-in-SVG 输出(#002)
    - Live Preview widget 内交互控件 = mousedown preventDefault + ignoreEvent 豁免(#001)
    - 游离元素 = 裸全局 `createDiv()`,永不 `document.createDiv()`(#003)
+   - 弹出窗口可达的代码不对 DOM 用 `instanceof`,用 `composedPath()` / `contains()` / `instanceOf()`(#004)
 4. **修复 → 全量回归 → 部署**(`/deploy-and-verify`)→ **追加档案**

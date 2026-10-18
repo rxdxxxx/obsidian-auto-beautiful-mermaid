@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import { renderMermaidSVG, renderMermaidSVGAsync } from "beautiful-mermaid";
 import * as obsidian from "obsidian";
 
+import { DIAGRAM_VIEW_TYPE } from "./diagram-view";
 import AutoBeautifulMermaidPlugin, {
   allowedModes,
   appendSvg,
@@ -201,7 +202,7 @@ describe("Reading View routing", () => {
     expect(renderBeautiful).not.toHaveBeenCalled();
     expect(el.querySelector(".abm-view-beautiful")).toBeNull();
     // Only System + Source buttons exist.
-    const buttonModes = Array.from(el.querySelectorAll(".abm-toolbar-btn")).map(
+    const buttonModes = Array.from(el.querySelectorAll(".abm-toolbar-btn[data-mode]")).map(
       (b) => (b as HTMLElement).dataset.mode,
     );
     expect(buttonModes).toEqual(["system", "source"]);
@@ -711,5 +712,162 @@ describe("renderWidget", () => {
     expect(plugin.getMode("flowchart TD\n  A --> B")).toBe("system");
     // System slot populated after the click.
     expect((container.querySelector(".abm-view-system") as HTMLElement).querySelector("svg")).not.toBeNull();
+  });
+});
+
+// --- Open in new window ---------------------------------------------------------
+
+describe("toolbar open button", () => {
+  const SOURCE = "flowchart TD\n  A --> B";
+
+  function mountWithOpen(initial: ViewMode = DEFAULT_MODE, modes: ViewMode[] = SUPPORTED_MODES) {
+    const host = document.createElement("div");
+    const openDiagram = vi.fn();
+    const mode = modeHolder(initial);
+    const { container } = mountMermaidBlock({
+      host,
+      source: SOURCE,
+      modes,
+      getMode: mode.getMode,
+      setMode: mode.setMode,
+      renderBeautiful: vi.fn(),
+      renderSystem: vi.fn(),
+      openDiagram,
+    });
+    const button = container.querySelector<HTMLButtonElement>(".abm-toolbar-open");
+    return { container, openDiagram, button };
+  }
+
+  it("is absent when no openDiagram callback is given", () => {
+    const host = document.createElement("div");
+    mountMermaidBlock({
+      host,
+      source: SOURCE,
+      modes: SUPPORTED_MODES,
+      getMode: () => "beautiful",
+      setMode: vi.fn(),
+      renderBeautiful: vi.fn(),
+      renderSystem: vi.fn(),
+    });
+    expect(host.querySelector(".abm-toolbar-open")).toBeNull();
+  });
+
+  it("sits after the mode buttons with an icon and an accessible label", () => {
+    const { container, button } = mountWithOpen();
+    expect(button).not.toBeNull();
+    expect(button!.getAttribute("aria-label")).toBe("Open in new window");
+    expect(button!.dataset.icon).toBe("maximize-2");
+    expect(button!.dataset.mode).toBeUndefined();
+    const bar = container.querySelector(".abm-toolbar")!;
+    expect(bar.lastElementChild).toBe(button);
+  });
+
+  it.each([
+    ["beautiful", "beautiful"],
+    ["both", "both"],
+    ["system", "system"],
+  ] as const)("in %s mode opens the %s view", (mode, expected) => {
+    const { openDiagram, button } = mountWithOpen(mode);
+    button!.click();
+    expect(openDiagram).toHaveBeenCalledWith(expected);
+  });
+
+  it("follows mode switches made after mounting", () => {
+    const { container, openDiagram, button } = mountWithOpen();
+    (container.querySelector('button[data-mode="system"]') as HTMLElement).click();
+    button!.click();
+    expect(openDiagram).toHaveBeenCalledWith("system");
+  });
+
+  it("does nothing in Source mode", () => {
+    const { openDiagram, button } = mountWithOpen("source");
+    button!.click();
+    expect(openDiagram).not.toHaveBeenCalled();
+  });
+
+  it("prevents mousedown default (cursor must not enter the fence)", () => {
+    const { button } = mountWithOpen();
+    const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    button!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("is offered for unsupported types too (System render)", () => {
+    const { openDiagram, button } = mountWithOpen("system", UNSUPPORTED_MODES);
+    button!.click();
+    expect(openDiagram).toHaveBeenCalledWith("system");
+  });
+});
+
+describe("plugin.openDiagram", () => {
+  const SOURCE = "flowchart TD\n  A --> B";
+  const platform = obsidian.Platform as { isDesktopApp: boolean };
+
+  function pluginWithWorkspace() {
+    const leaf = { setViewState: vi.fn(() => Promise.resolve()) };
+    const workspace = {
+      openPopoutLeaf: vi.fn(() => leaf),
+      getLeaf: vi.fn(() => leaf),
+    };
+    const plugin = new AutoBeautifulMermaidPlugin({ workspace } as never, {} as never);
+    return { plugin, leaf, workspace };
+  }
+
+  afterEach(() => {
+    platform.isDesktopApp = true;
+  });
+
+  it("on desktop opens a pop-out window holding the source and mode", async () => {
+    const { plugin, leaf, workspace } = pluginWithWorkspace();
+    await plugin.openDiagram(SOURCE, "system");
+
+    expect(workspace.openPopoutLeaf).toHaveBeenCalledTimes(1);
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+    expect(leaf.setViewState).toHaveBeenCalledWith({
+      type: DIAGRAM_VIEW_TYPE,
+      active: true,
+      state: { source: SOURCE, mode: "system" },
+    });
+  });
+
+  it("on mobile (no pop-out windows) opens a new tab instead", async () => {
+    platform.isDesktopApp = false;
+    const { plugin, workspace } = pluginWithWorkspace();
+    await plugin.openDiagram(SOURCE, "beautiful");
+
+    expect(workspace.openPopoutLeaf).not.toHaveBeenCalled();
+    expect(workspace.getLeaf).toHaveBeenCalledWith("tab");
+  });
+
+  it("is wired to the Reading View and Live Preview toolbars", async () => {
+    renderBeautiful.mockResolvedValue("<svg>x</svg>");
+    renderBeautifulSync.mockReturnValue("<svg>x</svg>");
+    const plugin = makePlugin();
+    const open = vi.spyOn(plugin, "openDiagram").mockResolvedValue();
+
+    const el = document.createElement("div");
+    await route(plugin, SOURCE, el);
+    el.querySelector<HTMLElement>(".abm-toolbar-open")!.click();
+    expect(open).toHaveBeenLastCalledWith(SOURCE, "beautiful");
+
+    const host = plugin.renderWidget("gantt\n  title G");
+    host.querySelector<HTMLElement>(".abm-toolbar-open")!.click();
+    expect(open).toHaveBeenLastCalledWith("gantt\n  title G", "system");
+  });
+});
+
+describe("renderDiagramInto", () => {
+  it("dispatches to beautiful-mermaid or Obsidian's mermaid by renderer", async () => {
+    renderBeautiful.mockResolvedValue('<svg id="pop-b">x</svg>');
+    __setMermaidRender(async () => ({ svg: '<svg id="pop-s">x</svg>' }));
+    const plugin = makePlugin();
+
+    const a = document.createElement("div");
+    await plugin.renderDiagramInto(a, "flowchart TD", "beautiful");
+    expect(a.querySelector(".abm-beautiful svg#pop-b")).not.toBeNull();
+
+    const b = document.createElement("div");
+    await plugin.renderDiagramInto(b, "gantt", "system");
+    expect(b.querySelector("svg#pop-s")).not.toBeNull();
   });
 });

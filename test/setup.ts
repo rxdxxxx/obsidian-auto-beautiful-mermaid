@@ -55,9 +55,39 @@ function createDiv(
   return createEl.call(this, "div", info) as HTMLDivElement;
 }
 
+function createSpan(
+  this: HTMLElement,
+  info?: DomElementInfo | string,
+): HTMLSpanElement {
+  return createEl.call(this, "span", info) as HTMLSpanElement;
+}
+
+function addClass(this: HTMLElement, ...classes: string[]): void {
+  this.classList.add(...classes);
+}
+
+function removeClass(this: HTMLElement, ...classes: string[]): void {
+  this.classList.remove(...classes);
+}
+
+/** Obsidian's `el.empty()`: remove every child. */
+function empty(this: HTMLElement): void {
+  while (this.firstChild) this.removeChild(this.firstChild);
+}
+
+/** Obsidian's `el.setCssProps()`: set CSS custom properties inline. */
+function setCssProps(this: HTMLElement, props: Record<string, string>): void {
+  for (const [name, value] of Object.entries(props)) this.style.setProperty(name, value);
+}
+
 // Patch the prototype so every element created under jsdom gains the helpers.
 (HTMLElement.prototype as unknown as Record<string, unknown>).createEl = createEl;
 (HTMLElement.prototype as unknown as Record<string, unknown>).createDiv = createDiv;
+(HTMLElement.prototype as unknown as Record<string, unknown>).createSpan = createSpan;
+(HTMLElement.prototype as unknown as Record<string, unknown>).addClass = addClass;
+(HTMLElement.prototype as unknown as Record<string, unknown>).removeClass = removeClass;
+(HTMLElement.prototype as unknown as Record<string, unknown>).empty = empty;
+(HTMLElement.prototype as unknown as Record<string, unknown>).setCssProps = setCssProps;
 
 // Obsidian's ambient `activeDocument` global (obsidian.d.ts) is injected by the
 // app at runtime — enhance.js defines it per focused window. Under jsdom there

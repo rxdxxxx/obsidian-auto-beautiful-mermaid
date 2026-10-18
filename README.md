@@ -14,6 +14,7 @@ Both Reading View and Live Preview are covered.
 - ✅ Beautiful output for supported diagram types via `beautiful-mermaid`
 - ✅ Full Mermaid type coverage — no diagram ever falls through to an error box
 - ✅ Per-block toolbar: switch between **Beautiful / System / Both / Source** modes
+- ✅ Open in new window: pop the current view (Beautiful, System, or Both stacked) out into its own window, with wheel/pinch zoom, drag to pan, and double-click to fit (opens as a tab on mobile)
 - ✅ Automatic dark/light theme adaptation
 - ✅ Live Preview support (CodeMirror EditorExtension)
 - ✅ Zero conflicts — completely takes over all `mermaid` fences so no duplicate rendering

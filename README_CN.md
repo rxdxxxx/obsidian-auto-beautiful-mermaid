@@ -14,6 +14,7 @@
 - ✅ 支持的图表类型自动使用 `beautiful-mermaid` 输出精美效果
 - ✅ 完整的 Mermaid 类型覆盖 —— 不会有图表因为不支持而报错
 - ✅ 每个代码块上方的工具栏：可切换 **Beautiful / System / Both / Source** 模式
+- ✅ 在新窗口中打开：将当前视图（Beautiful、System 或上下叠放的 Both）弹出到独立窗口，支持滚轮/触控板缩放、拖动平移、双击适应窗口（移动端以新标签页打开）
 - ✅ 自动适配暗色/亮色主题
 - ✅ 支持实时预览（CodeMirror EditorExtension）
 - ✅ 零冲突 —— 完全接管所有 `mermaid` 代码块，不会出现重复渲染
