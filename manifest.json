@@ -1,7 +1,7 @@
 {
   "id": "auto-beautiful-mermaid",
   "name": "Auto Beautiful Mermaid",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "minAppVersion": "1.4.0",
   "description": "Smart-routes Mermaid diagrams across beautiful-mermaid, pele, and the built-in engine.",
   "author": "rxdxxxx",
