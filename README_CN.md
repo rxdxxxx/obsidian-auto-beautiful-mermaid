@@ -80,7 +80,7 @@
 
 所有类型都可以用 **System** 模式渲染。Beautiful 和 Pele 都不支持的类型（例如 `zenuml`）只提供 System 和 Source 两个按钮。
 
-Pele 对齐 Mermaid 12.1 语法，但有自己的布局和视觉风格，覆盖面随版本持续扩大。遇到 Pele 的渲染问题，先看看 [pele 的 issue 列表](https://github.com/obsidianmd/pele/issues) 是否已有记录。
+Pele 对齐 Mermaid 12.1 语法，但有自己的布局和视觉风格，覆盖面随版本持续扩大。本插件内置 pele **1.12**：中文、日文标签按字符换行，支持更多行内 HTML 标签，输出的 SVG 保证是合法 XML，并且用 `style`/`classDef` 自定义填充时标签在暗色主题下依然清晰可读。遇到 Pele 的渲染问题，先看看 [pele 的 issue 列表](https://github.com/obsidianmd/pele/issues) 是否已有记录。
 
 ## 安装
 

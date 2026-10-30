@@ -80,7 +80,7 @@ Types the chosen renderer cannot draw fall back to System automatically.
 
 Every type is available in **System** mode. Types unsupported by both Beautiful and Pele (for example `zenuml`) simply offer System and Source.
 
-Pele follows Mermaid 12.1 syntax with its own layout and visual style; its coverage grows release by release. Check [pele's issues](https://github.com/obsidianmd/pele/issues) for known rendering quirks before filing one here.
+Pele follows Mermaid 12.1 syntax with its own layout and visual style; its coverage grows release by release. This plugin bundles pele **1.12**, which adds character-level wrapping for Chinese and Japanese labels, wider inline HTML support, XML-safe SVG output, and readable labels on custom `style`/`classDef` fills in dark themes. Check [pele's issues](https://github.com/obsidianmd/pele/issues) for known rendering quirks before filing one here.
 
 ## Installation
 
